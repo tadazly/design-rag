@@ -1,0 +1,301 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Strict release version without the v prefix
+        required: true
+        type: string
+      source_sha:
+        description: Verified 40-character commit on origin/main
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify immutable release inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          git fetch origin main --no-tags
+          test "$(git rev-parse origin/main)" = "$SOURCE_SHA"
+          test "$(node -p "require('./package.json').version")" = "$VERSION"
+          if git ls-remote --exit-code --tags origin "refs/tags/v${VERSION}" >/dev/null 2>&1; then
+            echo "tag v${VERSION} already exists" >&2
+            exit 1
+          fi
+          if gh release view "v${VERSION}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release v${VERSION} already exists" >&2
+            exit 1
+          fi
+          conclusion="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${SOURCE_SHA}&event=push" --jq '[.workflow_runs[] | select(.name == "CI")][0].conclusion // ""')"
+          test "$conclusion" = "success"
+          node scripts/extract-release-notes.mjs "$VERSION" /tmp/release-notes.md
+
+      - run: npm run verify:release
+      - run: npm run plugin:validate
+
+  windows:
+    needs: preflight
+    runs-on: windows-latest
+    timeout-minutes: 35
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - run: npm ci --ignore-scripts
+      - run: npm run dist -- --win portable --x64
+      - run: npm run plugin:stage:win:go-test
+      - run: npm run plugin:pack:win
+      - run: npm run verify:binary -- dist/native/drag-core.exe release/plugin/win32-x64/design-rag-local/plugins/design-rag/bin/drag.exe
+
+      - name: Collect Windows assets
+        shell: pwsh
+        run: |
+          $output = 'ci-out/windows'
+          New-Item -ItemType Directory -Force -Path "$output/plugin-root" | Out-Null
+          Copy-Item -Recurse -Force 'release/plugin/win32-x64/design-rag-local/plugins/design-rag/*' "$output/plugin-root"
+          Copy-Item -Force 'release/plugin/win32-x64/stage-evidence.json' "$output/stage-evidence-windows.json"
+          Copy-Item -Force 'tests/.tmp/plugin-stage-go-test/win32-x64/stage-evidence.json' "$output/runtime-evidence-windows.json"
+          $pluginZip = Get-ChildItem -LiteralPath 'release/plugin/win32-x64' -Filter 'design-rag-local-*-win32-x64.zip' | Select-Object -Single
+          Copy-Item -LiteralPath $pluginZip.FullName -Destination $output
+          $gui = Get-ChildItem -LiteralPath 'release' -Filter 'design-rag-gui-*-win-x64.exe' | Select-Object -Single
+          Copy-Item -LiteralPath $gui.FullName -Destination $output
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: ci-out/windows
+          if-no-files-found: error
+          retention-days: 7
+
+  macos:
+    needs: preflight
+    runs-on: macos-15
+    timeout-minutes: 40
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - run: npm ci --ignore-scripts
+      - run: npm run dist
+      - run: npm run plugin:stage:mac:go-test
+      - run: npm run plugin:pack:mac
+      - run: npm run verify:binary -- dist/native/drag-core release/plugin/darwin-arm64/design-rag-local/plugins/design-rag/bin/drag
+
+      - name: Collect macOS assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-out/macos/plugin-root
+          cp -R release/plugin/darwin-arm64/design-rag-local/plugins/design-rag/. ci-out/macos/plugin-root/
+          cp release/plugin/darwin-arm64/stage-evidence.json ci-out/macos/stage-evidence-macos.json
+          cp tests/.tmp/plugin-stage-go-test/darwin-arm64/stage-evidence.json ci-out/macos/runtime-evidence-macos.json
+          cp release/plugin/darwin-arm64/design-rag-local-*-darwin-arm64.zip ci-out/macos/
+          cp release/design-rag-gui-*-mac-arm64.dmg ci-out/macos/
+          cp release/design-rag-gui-*-mac-arm64.zip ci-out/macos/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-macos
+          path: ci-out/macos
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [preflight, windows, macos]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-windows
+          path: artifacts/windows
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-macos
+          path: artifacts/macos
+
+      - name: Assemble immutable plugin tag tree
+        env:
+          VERSION: ${{ inputs.version }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          mkdir -p plugins/design-rag/bin
+          cp artifacts/windows/plugin-root/bin/drag.exe plugins/design-rag/bin/drag.exe
+          cp artifacts/macos/plugin-root/bin/drag plugins/design-rag/bin/drag
+          cp artifacts/windows/plugin-root/LICENSE plugins/design-rag/LICENSE
+          cp artifacts/windows/plugin-root/NOTICE plugins/design-rag/NOTICE
+          cp -R artifacts/windows/plugin-root/THIRD_PARTY_NOTICES plugins/design-rag/THIRD_PARTY_NOTICES
+          chmod 755 plugins/design-rag/bin/drag
+          npm run verify:tag-plugin -- plugins/design-rag "$VERSION"
+
+          git config user.name "tadazly"
+          git config user.email "8179669+tadazly@users.noreply.github.com"
+          git add -f plugins/design-rag/bin plugins/design-rag/LICENSE plugins/design-rag/NOTICE plugins/design-rag/THIRD_PARTY_NOTICES
+          git commit -m "chore(release): assemble v${VERSION} plugin distribution"
+          npm run verify:release
+          git tag -a "v${VERSION}" -m "DRAG v${VERSION}"
+
+      - name: Build release metadata and checksums
+        env:
+          VERSION: ${{ inputs.version }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          cp artifacts/windows/design-rag-local-*-win32-x64.zip release-assets/
+          cp artifacts/macos/design-rag-local-*-darwin-arm64.zip release-assets/
+          cp artifacts/windows/design-rag-gui-*-win-x64.exe release-assets/
+          cp artifacts/macos/design-rag-gui-*-mac-arm64.dmg release-assets/
+          cp artifacts/macos/design-rag-gui-*-mac-arm64.zip release-assets/
+          cp artifacts/windows/stage-evidence-windows.json release-assets/
+          cp artifacts/macos/stage-evidence-macos.json release-assets/
+          cp artifacts/windows/runtime-evidence-windows.json release-assets/
+          cp artifacts/macos/runtime-evidence-macos.json release-assets/
+          TAG_COMMIT="$(git rev-parse HEAD)"
+          jq -n \
+            --arg version "$VERSION" \
+            --arg sourceSha "$SOURCE_SHA" \
+            --arg tagCommit "$TAG_COMMIT" \
+            --slurpfile windows release-assets/stage-evidence-windows.json \
+            --slurpfile macos release-assets/stage-evidence-macos.json \
+            --slurpfile windowsRuntime release-assets/runtime-evidence-windows.json \
+            --slurpfile macosRuntime release-assets/runtime-evidence-macos.json \
+            '{status:"PASS",version:$version,sourceSha:$sourceSha,tagCommit:$tagCommit,windowsPlugin:$windows[0],macosPlugin:$macos[0],windowsRuntime:$windowsRuntime[0],macosRuntime:$macosRuntime[0],signing:{windows:"unsigned",macos:"unsigned",notarized:false}}' \
+            > release-assets/release-evidence.json
+          (cd release-assets && sha256sum *.zip *.exe *.dmg *.json | sort -k2 > SHA256SUMS.txt)
+          node scripts/extract-release-notes.mjs "$VERSION" release-assets/RELEASE_NOTES.md
+
+      - name: Push tag and publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git push origin "refs/tags/v${VERSION}"
+          gh release create "v${VERSION}" release-assets/*.zip release-assets/*.exe release-assets/*.dmg release-assets/*.json release-assets/SHA256SUMS.txt \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "DRAG v${VERSION}" \
+            --notes-file release-assets/RELEASE_NOTES.md \
+            --verify-tag \
+            --draft
+          gh release edit "v${VERSION}" --repo "$GITHUB_REPOSITORY" --draft=false
+          gh release view "v${VERSION}" --repo "$GITHUB_REPOSITORY" --json url,tagName,isDraft,assets
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-evidence-${{ inputs.version }}
+          path: |
+            release-assets/release-evidence.json
+            release-assets/SHA256SUMS.txt
+            release-assets/RELEASE_NOTES.md
+          if-no-files-found: error
+          retention-days: 30
+
+  notify-s-plugins:
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Notify s-plugins
+        env:
+          GH_TOKEN: ${{ secrets.S_PLUGINS_DISPATCH_TOKEN }}
+          PLUGIN_REF: v${{ inputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${GH_TOKEN:-}" ]]; then
+            echo "Required repository secret S_PLUGINS_DISPATCH_TOKEN is not configured." >&2
+            exit 1
+          fi
+          jq -n --arg ref "$PLUGIN_REF" '{
+            event_type: "plugin-released",
+            client_payload: {
+              name: "design-rag",
+              url: "https://github.com/tadazly/design-rag.git",
+              path: "./plugins/design-rag",
+              ref: $ref,
+              category: "Productivity"
+            }
+          }' | gh api --method POST repos/tadazly/s-plugins/dispatches --input -
+          echo "Accepted plugin-released dispatch for design-rag@${PLUGIN_REF}." >> "$GITHUB_STEP_SUMMARY"

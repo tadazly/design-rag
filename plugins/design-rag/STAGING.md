@@ -1,6 +1,6 @@
 # DRAG Plugin staging
 
-Plugin 技术 ID 为 `design-rag`，用户可见名称为 `DRAG 游戏策划知识库`。分发物只包含一个目标平台纯 Go `drag` binary、manifest、MCP 配置、Skill 与第三方声明；不包含 Node、JavaScript、`node_modules`、Electron 或独立 launcher。
+Plugin 技术 ID 为 `design-rag`，用户可见名称为 `DRAG 游戏策划知识库`。单平台 ZIP 只包含对应平台的纯 Go `drag` binary、manifest、MCP 配置、Skill 与第三方声明；不包含 Node、JavaScript、`node_modules`、Electron 或独立 launcher。供 `git-subdir` marketplace 使用的正式 tag 树同时包含 Windows `drag.exe` 与 macOS `drag`，但不会把这两个 binary 合并回 `main`。
 
 ## 隔离验收
 
@@ -50,3 +50,7 @@ npm run plugin:pack:mac
 ```
 
 stage、最终 archive、安装、commit、push 与发布是独立动作。Windows stage PASS 不代表 macOS 实机、codesign、notarization、Gatekeeper 或最终发布 PASS。
+
+## GitHub Release
+
+仓库级 `design-rag-release` Skill 负责版本推断、CHANGELOG、授权、源码提交和远端验收；`.github/workflows/release.yml` 负责原生构建、tag 发布树、Release 资产，以及在发布成功后向 `s-plugins` 发送 `plugin-released` repository dispatch。发布顺序固定为：源码 CI 通过 → 两个平台原生构建与 smoke → 组装双 binary tag 树 → 创建 tag → 发布 Release → 下游幂等更新 marketplace。已有 tag 不得移动或覆盖。

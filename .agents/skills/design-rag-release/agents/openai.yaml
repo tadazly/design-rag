@@ -1,0 +1,7 @@
+interface:
+  display_name: "DRAG 发布"
+  short_description: "推断版本并发布 Plugin 与 Windows/macOS 桌面产物"
+  default_prompt: "发布 DRAG 新版本，先完成预检并给出一次性授权清单。"
+
+policy:
+  allow_implicit_invocation: true
