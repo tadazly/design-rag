@@ -1,0 +1,31 @@
+appId: com.luyilabs.design-rag
+productName: DRAG · 游戏策划知识库
+directories:
+  output: release
+files:
+  - dist/**/*
+  - package.json
+  - node_modules/**/*
+asar: true
+asarUnpack:
+  - dist/native/**/*
+  - node_modules/pdf-parse/**/*
+win:
+  executableName: drag-gui
+  target:
+    - dir
+  artifactName: design-rag-gui-${version}-win-${arch}.${ext}
+mac:
+  executableName: drag-gui
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  target:
+    - target: dmg
+      arch:
+        - arm64
+    - target: zip
+      arch:
+        - arm64
+  artifactName: design-rag-gui-${version}-mac-${arch}.${ext}

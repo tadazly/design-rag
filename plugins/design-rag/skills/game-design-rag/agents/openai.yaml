@@ -1,0 +1,7 @@
+interface:
+  display_name: "DRAG 游戏策划知识库"
+  short_description: "检索策划案、配表、精灵与实体 ID、玩法逻辑和历史版本"
+  brand_color: "#E85432"
+  default_prompt: "使用 $game-design-rag 查找相关策划与配表。MCP server 固定为 design-rag；首次列资源时不传 server，或精确使用 design-rag，禁止使用 design_rag。回读引用时逐字复制工具返回的 `DRAG:` citationId，不解码、改写或手工拼接。以可点击文件名和原文位置展示引用，不显示裸 chunk ID。"
+policy:
+  allow_implicit_invocation: true

@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2024"],
+    "types": ["node"],
+    "rootDir": ".",
+    "outDir": "dist-tests",
+    "sourceMap": true
+  },
+  "include": ["src/core/**/*.ts", "src/core/**/*.d.ts", "src/mcp/**/*.ts", "src/shared/**/*.ts", "tests/**/*.ts"]
+}

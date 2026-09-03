@@ -1,0 +1,27 @@
+{
+  "name": "design-rag",
+  "version": "0.3.0",
+  "description": "DRAG 本地游戏策划案与配置表检索、分析和索引管理工具",
+  "author": {
+    "name": "tadazly"
+  },
+  "repository": "https://github.com/tadazly/design-rag.git",
+  "license": "Apache-2.0",
+  "keywords": ["game-design", "rag", "planning", "tables", "local-search"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "DRAG 游戏策划知识库",
+    "shortDescription": "检索本地策划案、配表和历史版本",
+    "longDescription": "使用本地只读索引模糊查找游戏策划案与配置表，分析玩法、流程、产出逻辑、历史改动和活动复用，并管理资料来源与增量索引。",
+    "developerName": "tadazly",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "defaultPrompt": [
+      "找到最新的节日活动，说明玩法和产出逻辑。",
+      "新增一个抽奖活动需要配置哪些表格？",
+      "找出可以复用的活动方案并比较差异。"
+    ],
+    "brandColor": "#E85432"
+  },
+  "mcpServers": "./.mcp.json"
+}

@@ -1,0 +1,22 @@
+{
+  "mcpServers": {
+    "design-rag": {
+      "command": "./bin/drag",
+      "args": ["mcp"],
+      "cwd": ".",
+      "enabled": true,
+      "default_tools_approval_mode": "approve",
+      "tools": {
+        "drag_source_add": { "approval_mode": "prompt" },
+        "drag_source_update": { "approval_mode": "prompt" },
+        "drag_source_remove": { "approval_mode": "prompt" },
+        "drag_index_update": { "approval_mode": "prompt" },
+        "drag_index_pause": { "approval_mode": "prompt" },
+        "drag_index_resume": { "approval_mode": "prompt" },
+        "drag_cache_clear": { "approval_mode": "prompt" }
+      },
+      "startup_timeout_sec": 30,
+      "tool_timeout_sec": 7200
+    }
+  }
+}

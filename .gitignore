@@ -1,0 +1,17 @@
+node_modules/
+.npm-cache/
+dist/
+dist-tests/
+release/
+release-direct/
+coverage/
+*.log
+.DS_Store
+Thumbs.db
+.env
+.env.*
+!.env.example
+runtime-data/
+tests/.tmp/
+.tmp-go-cache/
+.tmp-go-mod/
