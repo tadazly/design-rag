@@ -84,7 +84,9 @@ try {
 
 let latestTag = null;
 try {
-  latestTag = capture("git", ["tag", "--merged", "HEAD", "--list", "v[0-9]*.[0-9]*.[0-9]*", "--sort=-version:refname"]).split(/\r?\n/)[0] || null;
+  // Release tags point to detached distribution commits whose parent is the
+  // source commit on main, so they are intentionally not merged into HEAD.
+  latestTag = capture("git", ["tag", "--list", "v[0-9]*.[0-9]*.[0-9]*", "--sort=-version:refname"]).split(/\r?\n/)[0] || null;
 } catch {
   // First release.
 }

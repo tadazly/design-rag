@@ -279,9 +279,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
+
       - name: Notify s-plugins
         env:
           GH_TOKEN: ${{ secrets.S_PLUGINS_DISPATCH_TOKEN }}
+          PLUGIN_MANIFEST: plugins/design-rag/.codex-plugin/plugin.json
+          PLUGIN_SOURCE_PATH: ./plugins/design-rag
           PLUGIN_REF: v${{ inputs.version }}
         shell: bash
         run: |
@@ -290,14 +296,29 @@ jobs:
             echo "Required repository secret S_PLUGINS_DISPATCH_TOKEN is not configured." >&2
             exit 1
           fi
-          jq -n --arg ref "$PLUGIN_REF" '{
-            event_type: "plugin-released",
-            client_payload: {
-              name: "design-rag",
-              url: "https://github.com/tadazly/design-rag.git",
-              path: "./plugins/design-rag",
-              ref: $ref,
-              category: "Productivity"
-            }
-          }' | gh api --method POST repos/tadazly/s-plugins/dispatches --input -
+          jq -n \
+            --slurpfile plugin "$PLUGIN_MANIFEST" \
+            --arg ref "$PLUGIN_REF" \
+            --arg path "$PLUGIN_SOURCE_PATH" \
+            '($plugin[0].repository | sub("\\.git$"; "")) as $repositoryWebsite |
+            {
+              event_type: "plugin-released",
+              client_payload: {
+                name: $plugin[0].name,
+                version: $plugin[0].version,
+                description: $plugin[0].description,
+                source: {
+                  url: $plugin[0].repository,
+                  path: $path,
+                  ref: $ref
+                },
+                interface: {
+                  displayName: $plugin[0].interface.displayName,
+                  shortDescription: $plugin[0].interface.shortDescription,
+                  longDescription: $plugin[0].interface.longDescription,
+                  developerName: $plugin[0].interface.developerName,
+                  websiteURL: ($plugin[0].interface.websiteURL // $plugin[0].homepage // $repositoryWebsite)
+                }
+              }
+            }' | gh api --method POST repos/tadazly/s-plugins/dispatches --input -
           echo "Accepted plugin-released dispatch for design-rag@${PLUGIN_REF}." >> "$GITHUB_STEP_SUMMARY"

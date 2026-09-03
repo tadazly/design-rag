@@ -84,25 +84,39 @@ git diff --check
 此阶段只能在 Release 验收通过后执行。
 
 1. Release workflow 的独立 `notify-s-plugins` job 使用 `S_PLUGINS_DISPATCH_TOKEN`。该 fine-grained PAT 只授权 `tadazly/s-plugins`，并具有 `Contents: Read and write`；不得把 token 写入日志、artifact 或 payload。
-2. `PLUGIN_REF` 固定为 `v${{ inputs.version }}`。当前发布 workflow 由 `workflow_dispatch` 启动，因此 `github.ref_name` 是启动分支而不是发布 tag，禁止用它生成通知 ref。
-3. 向 `POST repos/tadazly/s-plugins/dispatches` 发送：
+2. 每次发布前读取 `https://github.com/tadazly/s-plugins/blob/main/README.md` 的“从其他仓库自动发布”协议，并以接收 workflow/脚本复核；README 中的示例值只用于理解结构，不作为本项目参数来源。
+3. 从 `plugins/design-rag/.codex-plugin/plugin.json` 读取本项目实际的 `name`、`version`、`description`、`interface` 和 repository。`PLUGIN_SOURCE_PATH` 使用本仓库实际目录 `./plugins/design-rag`；website 优先使用 manifest 的 `interface.websiteURL` 或 `homepage`，否则由实际 repository URL 去除 `.git` 得到。
+4. `PLUGIN_REF` 固定为 `v${{ inputs.version }}`。当前发布 workflow 由 `workflow_dispatch` 启动，因此 `github.ref_name` 是启动分支而不是发布 tag，禁止用它生成通知 ref。
+5. 向 `POST repos/tadazly/s-plugins/dispatches` 发送：
 
 ```json
 {
   "event_type": "plugin-released",
   "client_payload": {
     "name": "design-rag",
-    "url": "https://github.com/tadazly/design-rag.git",
-    "path": "./plugins/design-rag",
-    "ref": "vX.Y.Z",
-    "category": "Productivity"
+    "version": "X.Y.Z",
+    "description": "从当前 Plugin manifest 读取",
+    "source": {
+      "url": "从当前 Plugin manifest 的 repository 读取",
+      "path": "./plugins/design-rag",
+      "ref": "vX.Y.Z"
+    },
+    "interface": {
+      "displayName": "从当前 Plugin manifest 读取",
+      "shortDescription": "从当前 Plugin manifest 读取",
+      "longDescription": "从当前 Plugin manifest 读取",
+      "developerName": "从当前 Plugin manifest 读取",
+      "websiteURL": "从当前 Plugin manifest 或 repository 推导"
+    }
   }
 }
 ```
 
-4. `gh api` 返回成功只证明 dispatch 已被 GitHub 接受。随后等待 `s-plugins` 的 `Update plugin marketplace` repository-dispatch run，要求 conclusion 为 success。
-5. 读取下游最新 `main` SHA 和 `.agents/plugins/marketplace.json`，要求唯一 `design-rag` 条目使用 `git-subdir`、公开仓库 URL、`./plugins/design-rag` 与 `vX.Y.Z`。重复通知同一 ref 可以不产生新 commit，但最终条目必须一致。
-6. 接收端已经负责 payload 校验、幂等 upsert、仓库校验和直接提交 `main`；上游不再创建分支或 PR，也不重复实现 marketplace 写入逻辑。
+不得发送 `category`、`policy.installation` 或 `policy.authentication`，这些字段由 `s-plugins` 管理。`version` 必须是 manifest 中不带 `v` 的 SemVer；`source.ref` 才使用 `vX.Y.Z`。
+
+6. `gh api` 返回成功只证明 dispatch 已被 GitHub 接受。随后等待 `s-plugins` 的 `Update plugin marketplace` repository-dispatch run，要求 conclusion 为 success。
+7. 读取下游最新 `main` SHA、`.agents/plugins/marketplace.json` 和 README 插件目录，要求唯一 `design-rag` 条目的版本、展示信息和 `source.ref` 均与本次发布一致。重复通知同一内容可以不产生新 commit，但最终内容必须一致。
+8. 接收端已经负责 payload 校验、幂等 upsert、README 重建、仓库校验和直接提交 `main`；上游不再创建分支或 PR，也不重复实现 marketplace 写入逻辑。
 
 若 Secret 缺失、dispatch 被拒绝、下游 run 失败或最终 marketplace 不一致，将此阶段标记为 `FAIL` 或 `BLOCKED`。不要回滚已经验收通过的主仓库 Release；只重试独立通知 job。不得发送虚构版本进行连通性测试，因为接收端把事件视为上游已完成发布验收。
 

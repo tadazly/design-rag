@@ -30,7 +30,7 @@ description: 发布 DRAG（Design-RAG）新版本。当用户要求“发布新�
 - 跨平台产物必须由目标平台原生 runner 构建。发布 workflow 接收已验证的源码 SHA，构建 Windows x64 与 macOS arm64 Plugin/GUI，最后才创建不可变 tag 和 Release。
 - tag 对应的树必须包含 `plugins/design-rag/bin/drag.exe` 与 `plugins/design-rag/bin/drag`，以便 `git-subdir` marketplace 安装后直接启动；`main` 保持源码树，不长期纳入二进制。
 - GitHub Release 至少包含两个 Plugin ZIP、Windows GUI、macOS GUI、`SHA256SUMS.txt` 和发布说明。
-- Release 完成并验证后，才使用 `S_PLUGINS_DISPATCH_TOKEN` 发送 `plugin-released` 事件；`ref` 必须由发布输入拼成 `vX.Y.Z`，不得在 `workflow_dispatch` 中误用值为分支名的 `github.ref_name`。
+- Release 完成并验证后，才使用 `S_PLUGINS_DISPATCH_TOKEN` 发送 `plugin-released` 事件。按 `s-plugins` 当前 README 契约，从本项目 Plugin manifest 读取真实的 `name`、无 `v` 版本、description 与 interface，发送嵌套 `source`；`category` 和安装策略由 marketplace 管理。`source.ref` 必须由发布输入拼成 `vX.Y.Z`，不得在 `workflow_dispatch` 中误用值为分支名的 `github.ref_name`。
 - 所有结论按 `PASS / FAIL / BLOCKED / NOT TESTED` 报告，并附远端 SHA、tag target、workflow run、Release URL、资产清单、dispatch 结果、下游 workflow run 与 marketplace `main` SHA。
 
 ## 禁止事项
