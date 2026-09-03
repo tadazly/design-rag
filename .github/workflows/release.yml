@@ -90,7 +90,7 @@ jobs:
           cache: true
 
       - run: npm ci --ignore-scripts
-      - run: npm run dist -- --win portable --x64
+      - run: npm run dist -- --win portable --x64 --publish never
       - run: npm run plugin:stage:win:go-test
       - run: npm run plugin:pack:win
       - run: npm run verify:binary -- dist/native/drag-core.exe release/plugin/win32-x64/design-rag-local/plugins/design-rag/bin/drag.exe
@@ -103,10 +103,12 @@ jobs:
           Copy-Item -Recurse -Force 'release/plugin/win32-x64/design-rag-local/plugins/design-rag/*' "$output/plugin-root"
           Copy-Item -Force 'release/plugin/win32-x64/stage-evidence.json' "$output/stage-evidence-windows.json"
           Copy-Item -Force 'tests/.tmp/plugin-stage-go-test/win32-x64/stage-evidence.json' "$output/runtime-evidence-windows.json"
-          $pluginZip = Get-ChildItem -LiteralPath 'release/plugin/win32-x64' -Filter 'design-rag-local-*-win32-x64.zip' | Select-Object -Single
-          Copy-Item -LiteralPath $pluginZip.FullName -Destination $output
-          $gui = Get-ChildItem -LiteralPath 'release' -Filter 'design-rag-gui-*-win-x64.exe' | Select-Object -Single
-          Copy-Item -LiteralPath $gui.FullName -Destination $output
+          $pluginZips = @(Get-ChildItem -LiteralPath 'release/plugin/win32-x64' -Filter 'design-rag-local-*-win32-x64.zip')
+          if ($pluginZips.Count -ne 1) { throw "Expected one Windows Plugin ZIP, found $($pluginZips.Count)." }
+          Copy-Item -LiteralPath $pluginZips[0].FullName -Destination $output
+          $guiAssets = @(Get-ChildItem -LiteralPath 'release' -Filter 'design-rag-gui-*-win-x64.exe')
+          if ($guiAssets.Count -ne 1) { throw "Expected one Windows GUI executable, found $($guiAssets.Count)." }
+          Copy-Item -LiteralPath $guiAssets[0].FullName -Destination $output
 
       - uses: actions/upload-artifact@v4
         with:
@@ -137,7 +139,7 @@ jobs:
           cache: true
 
       - run: npm ci --ignore-scripts
-      - run: npm run dist
+      - run: npm run dist -- --publish never
       - run: npm run plugin:stage:mac:go-test
       - run: npm run plugin:pack:mac
       - run: npm run verify:binary -- dist/native/drag-core release/plugin/darwin-arm64/design-rag-local/plugins/design-rag/bin/drag
