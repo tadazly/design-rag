@@ -2,12 +2,26 @@
 
 DRAG 是面向游戏策划案、配置表和历史版本的本地知识库。它可以帮助策划、开发和运营快速查找玩法、流程、奖励产出、配表字段、历史改动和可复用方案。
 
-项目提供四种使用方式：
+## 快速开始：Codex Plugin
 
-- Codex Plugin：在 Codex 中直接检索和分析本地资料。
-- MCP：向支持 MCP 的客户端提供检索、引用和索引管理工具。
-- CLI：通过 `drag` 命令管理资料源、更新索引并查询资料。
-- 桌面客户端：管理资料源、查看检索证据和进行多会话分析。
+最简单的安装方式是通过 [S Plugins 的“安装与使用”说明](https://github.com/tadazly/s-plugins#安装与使用) 安装 `DRAG 游戏策划知识库`。marketplace 的添加、安装和更新步骤以该仓库为准，本仓库不重复维护。
+
+安装完成后新建 Codex 任务，直接添加本机资料来源：
+
+```text
+将 D:\Workspace\GameProject\design-docs 加入来源，类型是策划案；
+将 D:\Workspace\GameProject\table\excel 加入来源，类型是配置表。
+添加后等待增量索引结束，并报告失败文件。
+```
+
+之后可以直接描述问题或维护要求，例如：
+
+- `查找最新的节日活动，说明玩法、奖励产出和所需配表，并附原文件位置。`
+- `新增一个抽奖活动需要配置哪些表格？`
+- `增量更新所有来源的索引；发现 Git 或 SVN 仓库时先询问我是否更新。`
+- `更新 D:\Workspace\GameProject 的仓库，然后增量更新其中的来源。`
+
+新增来源会自动执行增量索引。来源目录必须是绝对路径，不能使用相同目录或互为父子目录。明确要求“更新仓库并更新索引”时，Codex 不会重复口头确认，但仍会遵守必要的工具 approval。
 
 ## 主要功能
 
@@ -25,65 +39,38 @@ DRAG 是面向游戏策划案、配置表和历史版本的本地知识库。它
 - 文档：PDF、XMind
 - 文本：Markdown、TXT、HTML、JSON、YAML
 
-## 快速开始
+## 其他使用方式
 
-源码开发需要 Node.js 24 和 Go 1.26。
+- 桌面客户端：从 [GitHub Releases](https://github.com/tadazly/design-rag/releases) 下载对应平台的 GUI，用于管理来源、查看证据和进行多会话分析。
+- CLI：通过 `drag` 管理来源、索引和检索；运行 `drag --help` 查看完整命令。
+- MCP：运行 `drag mcp`，向支持 MCP 的客户端提供检索、引用和索引管理工具。
+
+CLI 示例：
+
+```powershell
+drag sources add --id design-docs --label "策划案" --kind design --path "D:\Workspace\GameProject\design-docs" --json
+drag index
+drag search "幸运轮盘的历史方案" --sort newest --limit 10 --json
+```
+
+## 源码开发与验证
+
+源码开发需要 Node.js 24 和 Go 1.26：
 
 ```powershell
 npm install
 npm test
 npm run check
-```
-
-启动桌面客户端：
-
-```powershell
 npm start
 ```
 
-## 配置资料源
-
-首次启动时资料源为空。可以在桌面客户端设置页中添加目录，也可以使用 CLI：
-
-```powershell
-go run .\go\cmd\drag sources add --id design-docs --label "策划案" --kind design --path "D:\DesignRag\examples\design-docs" --json
-go run .\go\cmd\drag sources add --id config-tables --label "配表" --kind table --path "D:\DesignRag\examples\config-tables" --json
-go run .\go\cmd\drag index
-```
-
-上述目录仅为示例，请替换为自己的本地路径。
-
-## CLI 用法
-
-```powershell
-go run .\go\cmd\drag --version --json
-go run .\go\cmd\drag doctor --json
-go run .\go\cmd\drag sources list --json
-go run .\go\cmd\drag index
-go run .\go\cmd\drag search "幸运轮盘的历史方案" --sort newest --limit 10 --json
-go run .\go\cmd\drag retrieve "这个活动需要哪些配表" --sort newest --max-documents 8 --json
-go run .\go\cmd\drag status --json
-```
-
-构建后可将 `go run .\go\cmd\drag` 替换为 `drag`。
-
-## Codex Plugin
-
-Plugin 技术 ID 为 `design-rag`，显示名为 `DRAG 游戏策划知识库`。
+验证或构建 Codex Plugin：
 
 ```powershell
 npm run plugin:validate
 npm run plugin:stage:win
-```
-
-Apple Silicon Mac：
-
-```bash
-npm run plugin:validate
 npm run plugin:stage:mac
 ```
-
-Plugin 提供检索、引用回读、版本比较、资料源管理和索引管理工具。需要修改资料源或缓存的操作会在执行前请求确认。
 
 ## 本地数据
 

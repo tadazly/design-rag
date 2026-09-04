@@ -25,7 +25,4 @@ mac:
     - target: dmg
       arch:
         - arm64
-    - target: zip
-      arch:
-        - arm64
   artifactName: design-rag-gui-${version}-mac-${arch}.${ext}

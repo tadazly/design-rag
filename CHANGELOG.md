@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-09-04
+
+### 改进
+
+- 完善 Codex Plugin 手动更新索引流程：在有限父目录范围内识别 Git/SVN，并在用户授权后先更新仓库再做增量索引。
+- 将 Codex Plugin 安装和用法提前到快速开始，链接 S Plugins marketplace 说明，简化示例，并由每个 Release 的说明集中解释下载产物。
+- GitHub Release Notes 会逐项说明 Plugin 与桌面安装包用途，并明确 Windows/macOS 的签名和公证状态。
+- 精简 GitHub Release 下载项：保留两平台 Plugin 包、Windows GUI、macOS DMG 和校验和；发布 evidence 改为 Actions 审计产物，不再与用户安装包混列。
+
 ## [0.3.1] - 2026-09-03
 
 ### 修复

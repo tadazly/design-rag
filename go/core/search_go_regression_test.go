@@ -222,7 +222,11 @@ func TestGoScopedCitationPreservesUTF16SlicesAndRejectsTampering(t *testing.T) {
 	if read.Content != evidence.Content || read.Citation.Locator != evidence.Locator || read.Citation.CitationID != evidence.CitationID {
 		t.Fatalf("scoped round-trip differs: read=%#v evidence=%#v", read, evidence)
 	}
-	tampered := evidence.CitationID[:len(evidence.CitationID)-1] + "x"
+	replacement := "x"
+	if strings.HasSuffix(evidence.CitationID, replacement) {
+		replacement = "y"
+	}
+	tampered := evidence.CitationID[:len(evidence.CitationID)-1] + replacement
 	if _, err := service.Search.ReadCitation(context.Background(), tampered, nil); err == nil {
 		t.Fatal("tampered citation must fail")
 	}

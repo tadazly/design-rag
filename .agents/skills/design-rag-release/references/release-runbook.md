@@ -62,11 +62,11 @@ git diff --check
 
 1. 再次确认 `source_sha` 是当前 `origin/main`、版本矩阵为 `X.Y.Z`，且目标 tag/Release 不存在。
 2. Windows x64 原生 runner：构建和运行 Plugin CLI/MCP smoke，生成 Plugin ZIP；构建 GUI 可分发 EXE；扫描 Go build-info 与敏感字符串。
-3. Apple Silicon 原生 runner：构建和运行 Plugin CLI/MCP smoke，生成 Plugin ZIP；构建 GUI ZIP/DMG；扫描 build-info。签名、notarization、stapling 未配置时必须在 Release 和最终报告中明确标为 unsigned / not notarized。
+3. Apple Silicon 原生 runner：构建和运行 Plugin CLI/MCP smoke，生成 Plugin ZIP；构建 GUI DMG；扫描 build-info。签名、notarization、stapling 未配置时必须在 Release 和最终报告中明确标为 unsigned / not notarized。
 4. 汇总两个原生 stage，构造以 `source_sha` 为父提交的发布树，仅在该树加入两个 Plugin binary 与随包许可证。验证通用 `.mcp.json`、PE x64、Mach-O arm64、可执行 mode、版本和敏感词。
 5. 创建 annotated tag `vX.Y.Z` 指向该发布树提交；不得把该提交合并或 push 到 `main`。
-6. 生成 `SHA256SUMS.txt`，从 CHANGELOG 抽取该版本说明，创建 GitHub Release 并上传资产。
-7. 上传证据 JSON，至少记录 source SHA、tag commit、每个 binary/archive 的 SHA-256、平台运行 smoke 和签名状态。
+6. 生成只覆盖两个 Plugin ZIP、Windows GUI EXE 和 macOS GUI DMG 的 `SHA256SUMS.txt`。从 CHANGELOG 抽取版本说明，并追加精确文件名、用途、签名与 notarization 状态后创建 GitHub Release；不得上传 macOS GUI ZIP 或 evidence JSON。
+7. 将 evidence 保存为 90 天 Actions 审计 artifact，至少记录 source SHA、tag commit、每个 binary/archive 的 SHA-256、平台运行 smoke 和签名状态；关键状态同时写入 job summary。
 
 ## 阶段 5：远端验收
 
@@ -75,7 +75,8 @@ git diff --check
 - `origin/main` 仍指向源码发布提交，工作树不含 `plugins/design-rag/bin`。
 - `refs/tags/vX.Y.Z^{commit}` 与 workflow 报告一致，tag tree 同时包含两种 Plugin binary。
 - manifest、Go `--version --json`、GUI/package 与 tag 都是 `X.Y.Z`。
-- Release 不是 draft，资产名称唯一、大小非零，下载后的 SHA-256 与清单一致。
+- Release 不是 draft，且手工上传资产精确为两个 Codex Plugin ZIP、Windows GUI EXE、macOS GUI DMG 和 `SHA256SUMS.txt`；名称唯一、大小非零，下载后的 SHA-256 与清单一致。GitHub 自动生成的两个 Source code 快照不计入手工资产。
+- Release Notes 用精确文件名解释每个安装包用途，并显示实际签名和 notarization 状态；Release 中没有 evidence JSON 或 macOS GUI ZIP。
 - Windows Plugin 的真实 MCP stdio smoke 为 PASS；macOS Plugin 的原生 CLI/MCP smoke 为 PASS。
 - GUI 构建完成；未执行的 GUI 启动、签名或 notarization 只能标为 `NOT TESTED`，不能写成 PASS。
 

@@ -187,7 +187,7 @@ plugins/design-rag/
 
 源码 checkout 不在 `.agents/plugins/marketplace.json` 自注册，因为 `main` 不携带目标平台 binary，不能直接作为 Desktop 安装包启动。marketplace 模板保存在 `packaging/design-rag-marketplace.json`；Go 构建器只在完整 stage 中生成 `.agents/plugins/marketplace.json`，并将 MCP command 改写为目标平台 Go binary。
 
-正式发布由 GitHub Actions 在 Windows x64 与 Apple Silicon macOS 原生 runner 分别完成 stage、CLI/MCP smoke 和 archive。两个平台都通过后，workflow 以已验证的 `origin/main` 源码提交为父提交构造独立发布树，只在该树的 `plugins/design-rag/bin` 中加入 `drag.exe` 与 `drag`，再创建不可变 `vX.Y.Z` tag；该分发提交不合并回 `main`。平台 Plugin ZIP、Windows GUI、macOS GUI、checksums 和证据 JSON 作为同一 GitHub Release 的资产发布。Release 验收成功后，上游使用仅授权 `s-plugins` 的 Secret 发送 `plugin-released` repository dispatch；接收端幂等更新 `git-subdir` ref 并自行校验、提交 `main`，订阅者随后可直接启动 tag 树中的对应平台 binary。
+正式发布由 GitHub Actions 在 Windows x64 与 Apple Silicon macOS 原生 runner 分别完成 stage、CLI/MCP smoke 和 archive。两个平台都通过后，workflow 以已验证的 `origin/main` 源码提交为父提交构造独立发布树，只在该树的 `plugins/design-rag/bin` 中加入 `drag.exe` 与 `drag`，再创建不可变 `vX.Y.Z` tag；该分发提交不合并回 `main`。GitHub Release 只发布两平台 Codex Plugin 本地安装包、Windows GUI、macOS DMG 和 `SHA256SUMS.txt`；Release Notes 解释每个文件用途并显示签名/公证状态。stage、runtime 和汇总 evidence 保存为 90 天 Actions 审计产物，不与用户下载项混列。Release 验收成功后，上游使用仅授权 `s-plugins` 的 Secret 发送 `plugin-released` repository dispatch；接收端幂等更新 `git-subdir` ref 并自行校验、提交 `main`，订阅者随后可直接启动 tag 树中的对应平台 binary。
 
 Skill 覆盖模糊查找策划、玩法/流程/产出分析、相关配表、历史版本和活动复用，并在首次使用时通过管理工具配置来源和索引。
 

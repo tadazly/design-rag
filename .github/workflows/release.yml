@@ -154,7 +154,6 @@ jobs:
           cp tests/.tmp/plugin-stage-go-test/darwin-arm64/stage-evidence.json ci-out/macos/runtime-evidence-macos.json
           cp release/plugin/darwin-arm64/design-rag-local-*-darwin-arm64.zip ci-out/macos/
           cp release/design-rag-gui-*-mac-arm64.dmg ci-out/macos/
-          cp release/design-rag-gui-*-mac-arm64.zip ci-out/macos/
 
       - uses: actions/upload-artifact@v4
         with:
@@ -223,29 +222,39 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p release-assets
+          mkdir -p release-assets release-audit
           cp artifacts/windows/design-rag-local-*-win32-x64.zip release-assets/
           cp artifacts/macos/design-rag-local-*-darwin-arm64.zip release-assets/
           cp artifacts/windows/design-rag-gui-*-win-x64.exe release-assets/
           cp artifacts/macos/design-rag-gui-*-mac-arm64.dmg release-assets/
-          cp artifacts/macos/design-rag-gui-*-mac-arm64.zip release-assets/
-          cp artifacts/windows/stage-evidence-windows.json release-assets/
-          cp artifacts/macos/stage-evidence-macos.json release-assets/
-          cp artifacts/windows/runtime-evidence-windows.json release-assets/
-          cp artifacts/macos/runtime-evidence-macos.json release-assets/
           TAG_COMMIT="$(git rev-parse HEAD)"
           jq -n \
             --arg version "$VERSION" \
             --arg sourceSha "$SOURCE_SHA" \
             --arg tagCommit "$TAG_COMMIT" \
-            --slurpfile windows release-assets/stage-evidence-windows.json \
-            --slurpfile macos release-assets/stage-evidence-macos.json \
-            --slurpfile windowsRuntime release-assets/runtime-evidence-windows.json \
-            --slurpfile macosRuntime release-assets/runtime-evidence-macos.json \
+            --slurpfile windows artifacts/windows/stage-evidence-windows.json \
+            --slurpfile macos artifacts/macos/stage-evidence-macos.json \
+            --slurpfile windowsRuntime artifacts/windows/runtime-evidence-windows.json \
+            --slurpfile macosRuntime artifacts/macos/runtime-evidence-macos.json \
             '{status:"PASS",version:$version,sourceSha:$sourceSha,tagCommit:$tagCommit,windowsPlugin:$windows[0],macosPlugin:$macos[0],windowsRuntime:$windowsRuntime[0],macosRuntime:$macosRuntime[0],signing:{windows:"unsigned",macos:"unsigned",notarized:false}}' \
-            > release-assets/release-evidence.json
-          (cd release-assets && sha256sum *.zip *.exe *.dmg *.json | sort -k2 > SHA256SUMS.txt)
-          node scripts/extract-release-notes.mjs "$VERSION" release-assets/RELEASE_NOTES.md
+            > release-audit/release-evidence.json
+          (cd release-assets && sha256sum \
+            "design-rag-local-${VERSION}-win32-x64.zip" \
+            "design-rag-local-${VERSION}-darwin-arm64.zip" \
+            "design-rag-gui-${VERSION}-win-x64.exe" \
+            "design-rag-gui-${VERSION}-mac-arm64.dmg" \
+            | sort -k2 > SHA256SUMS.txt)
+          node scripts/extract-release-notes.mjs "$VERSION" release-assets/RELEASE_NOTES.md "$GITHUB_WORKSPACE" release-audit/release-evidence.json
+          jq -r '[
+            "## Release audit",
+            "",
+            "- Source SHA: `\(.sourceSha)`",
+            "- Tag commit: `\(.tagCommit)`",
+            "- Windows Plugin runtime / MCP: \(.windowsPlugin.runtimeExecution) / \(.windowsRuntime.mcpHandshake)",
+            "- macOS Plugin runtime / MCP: \(.macosPlugin.runtimeExecution) / \(.macosRuntime.mcpHandshake)",
+            "- Windows signing: \(.signing.windows)",
+            "- macOS signing / notarization: \(.signing.macos) / \(.signing.notarized)"
+          ] | .[]' release-audit/release-evidence.json >> "$GITHUB_STEP_SUMMARY"
 
       - name: Push tag and publish GitHub Release
         env:
@@ -255,7 +264,12 @@ jobs:
         run: |
           set -euo pipefail
           git push origin "refs/tags/v${VERSION}"
-          gh release create "v${VERSION}" release-assets/*.zip release-assets/*.exe release-assets/*.dmg release-assets/*.json release-assets/SHA256SUMS.txt \
+          gh release create "v${VERSION}" \
+            "release-assets/design-rag-local-${VERSION}-win32-x64.zip" \
+            "release-assets/design-rag-local-${VERSION}-darwin-arm64.zip" \
+            "release-assets/design-rag-gui-${VERSION}-win-x64.exe" \
+            "release-assets/design-rag-gui-${VERSION}-mac-arm64.dmg" \
+            release-assets/SHA256SUMS.txt \
             --repo "$GITHUB_REPOSITORY" \
             --title "DRAG v${VERSION}" \
             --notes-file release-assets/RELEASE_NOTES.md \
@@ -266,13 +280,13 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: release-evidence-${{ inputs.version }}
+          name: release-audit-${{ inputs.version }}
           path: |
-            release-assets/release-evidence.json
+            release-audit/release-evidence.json
             release-assets/SHA256SUMS.txt
             release-assets/RELEASE_NOTES.md
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 90
 
   notify-s-plugins:
     needs: publish

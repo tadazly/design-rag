@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 
@@ -36,6 +37,7 @@ const goModel = await readFile(path.join(projectRoot, "go/core/model.go"), "utf8
 const contracts = await readFile(path.join(projectRoot, "src/shared/contracts.ts"), "utf8");
 const goModule = await readFile(path.join(projectRoot, "go.mod"), "utf8");
 const electronBuilder = await readFile(path.join(projectRoot, "electron-builder.yml"), "utf8");
+const releaseWorkflow = await readFile(path.join(projectRoot, ".github/workflows/release.yml"), "utf8");
 const readme = await readFile(path.join(projectRoot, "README.md"), "utf8");
 const license = await readFile(path.join(projectRoot, "LICENSE"), "utf8");
 const notice = await readFile(path.join(projectRoot, "NOTICE"), "utf8");
@@ -68,9 +70,29 @@ assert(pluginManifest.repository === expectedRepository, "Plugin repository 与�
 assert(pluginManifest.license === "Apache-2.0", "Plugin license 必须为 Apache-2.0");
 assert(goModule.startsWith(`module ${expectedModule}\n`) || goModule.startsWith(`module ${expectedModule}\r\n`), "Go module 路径不正确");
 assert(/^appId:\s*com\.luyilabs\.design-rag\s*$/m.test(electronBuilder), "Electron appId 不正确");
+assert(!/^\s*-\s+target:\s+zip\s*$/m.test(electronBuilder), "macOS GUI Release 不应再生成重复 ZIP");
+assert(!releaseWorkflow.includes("design-rag-gui-*-mac-arm64.zip"), "Release workflow 不应收集 macOS GUI ZIP");
+assert(!releaseWorkflow.includes("release-assets/*.json"), "Release workflow 不应公开上传 evidence JSON");
+assert(releaseWorkflow.includes("release-audit/release-evidence.json"), "Release workflow 必须保留独立审计 evidence");
+assert(/name:\s*release-audit-\$\{\{ inputs\.version \}\}[\s\S]*?retention-days:\s*90/.test(releaseWorkflow), "Release 审计 artifact 必须保留 90 天");
 assert(license.includes("Apache License") && license.includes("Version 2.0, January 2004"), "LICENSE 不是 Apache License 2.0");
 assert(notice.includes("Copyright 2026 tadazly") && notice.includes(expectedRepository), "NOTICE 内容不完整");
 assert(!/\b\d+\.\d+\.\d+\b/.test(readme), "README 不应维护发布版本号");
+
+const notesTempRoot = await mkdtemp(path.join(tmpdir(), "design-rag-release-notes-"));
+try {
+  const evidencePath = path.join(notesTempRoot, "release-evidence.json");
+  const notesPath = path.join(notesTempRoot, "RELEASE_NOTES.md");
+  await writeFile(evidencePath, `${JSON.stringify({ signing: { windows: "unsigned", macos: "unsigned", notarized: false } }, null, 2)}\n`, "utf8");
+  capture(process.execPath, ["scripts/extract-release-notes.mjs", version, notesPath, projectRoot, evidencePath]);
+  const releaseNotes = await readFile(notesPath, "utf8");
+  assert(releaseNotes.includes(`design-rag-local-${version}-win32-x64.zip`) && releaseNotes.includes("Codex Plugin"), "Release Notes 缺少 Windows Plugin 用途");
+  assert(releaseNotes.includes(`design-rag-local-${version}-darwin-arm64.zip`) && releaseNotes.includes(`design-rag-gui-${version}-mac-arm64.dmg`), "Release Notes 缺少 macOS Plugin 或 GUI 用途");
+  assert(!releaseNotes.includes(`design-rag-gui-${version}-mac-arm64.zip`), "Release Notes 不应列出已移除的 macOS GUI ZIP");
+  assert(releaseNotes.includes("Windows 分发产物：未签名") && releaseNotes.includes("未完成 Apple notarization"), "Release Notes 缺少签名或 notarization 状态");
+} finally {
+  await rm(notesTempRoot, { recursive: true, force: true });
+}
 
 const forbiddenPatterns = [
   ["旧品牌名", new RegExp("s\\s*(?:plan|计划)", "i")],
