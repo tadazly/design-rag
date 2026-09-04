@@ -6,6 +6,7 @@ import process from "node:process";
 
 const projectRoot = path.resolve(import.meta.dirname, "..");
 const expectedRepository = "https://github.com/tadazly/design-rag.git";
+const expectedWebsite = "https://github.com/tadazly/design-rag";
 const expectedModule = "github.com/tadazly/design-rag";
 
 function assert(condition, message) {
@@ -66,6 +67,7 @@ assert(pluginManifest.name === "design-rag", "Plugin 技术 ID 必须为 design-
 assert(pluginManifest.author?.name === "tadazly", "Plugin author 必须为 tadazly");
 assert(pluginManifest.interface?.developerName === "tadazly", "Plugin developerName 必须为 tadazly");
 assert(pluginManifest.interface?.displayName === "DRAG 游戏策划知识库", "Plugin 显示名不正确");
+assert(pluginManifest.interface?.websiteURL === expectedWebsite, "Plugin websiteURL 与公开网站不一致");
 assert(pluginManifest.repository === expectedRepository, "Plugin repository 与公开仓库不一致");
 assert(pluginManifest.license === "Apache-2.0", "Plugin license 必须为 Apache-2.0");
 assert(goModule.startsWith(`module ${expectedModule}\n`) || goModule.startsWith(`module ${expectedModule}\r\n`), "Go module 路径不正确");

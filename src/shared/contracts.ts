@@ -1,6 +1,6 @@
 export const APP_NAME = "DRAG · 游戏策划知识库";
 export const APP_ID = "design-rag";
-export const APP_VERSION = "0.3.2";
+export const APP_VERSION = "0.3.3";
 
 export type SourceKind = "design" | "table";
 export type SectionType =

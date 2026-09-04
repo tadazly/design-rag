@@ -28,6 +28,7 @@ import (
 const (
 	ProductionPluginName = "design-rag"
 	TestPluginName       = "design-rag-go-test"
+	productionWebsite    = "https://github.com/tadazly/design-rag"
 	ownerMarkerFile      = ".design-rag-pluginpack-owned.json"
 )
 
@@ -214,6 +215,9 @@ func ValidateSource(projectRoot string) (StaticEvidence, error) {
 	interfaceObject, err := nestedObject(manifest, "interface")
 	if err != nil || stringValue(interfaceObject, "displayName") != "DRAG 游戏策划知识库" {
 		return StaticEvidence{}, errors.New("Plugin displayName 必须为 DRAG 游戏策划知识库")
+	}
+	if stringValue(interfaceObject, "websiteURL") != productionWebsite {
+		return StaticEvidence{}, errors.New("Plugin websiteURL 必须指向公开项目网站")
 	}
 	servers, err := nestedObject(mcpConfig, "mcpServers")
 	if err != nil || len(servers) != 1 {
@@ -1054,6 +1058,9 @@ func validateStage(pluginRoot, marketplaceRoot, pluginName, marketplaceName, ski
 	interfaceObject, _ := nestedObject(manifest, "interface")
 	if stringValue(interfaceObject, "displayName") != displayName {
 		return errors.New("stage displayName 无效")
+	}
+	if stringValue(interfaceObject, "websiteURL") != productionWebsite {
+		return errors.New("stage websiteURL 无效")
 	}
 	mcpConfig, err := readJSONObject(filepath.Join(pluginRoot, ".mcp.json"))
 	if err != nil {

@@ -8,6 +8,7 @@ const pluginRoot = path.resolve(projectRoot, process.argv[2] ?? "plugins/design-
 const packageJson = JSON.parse(await readFile(path.join(projectRoot, "package.json"), "utf8"));
 const expectedVersion = process.argv[3] ?? packageJson.version;
 const expectedModule = "github.com/tadazly/design-rag";
+const expectedWebsite = "https://github.com/tadazly/design-rag";
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -22,6 +23,7 @@ const mcp = JSON.parse(await readFile(path.join(pluginRoot, ".mcp.json"), "utf8"
 const server = mcp.mcpServers?.["design-rag"];
 assert(/^\d+\.\d+\.\d+$/.test(expectedVersion), `目标版本必须为严格 x.y.z：${expectedVersion}`);
 assert(manifest.version === expectedVersion, `Plugin manifest 版本不一致：${manifest.version} != ${expectedVersion}`);
+assert(manifest.interface?.websiteURL === expectedWebsite, "tag Plugin websiteURL 与公开网站不一致");
 assert(server?.command === "./bin/drag" && server?.cwd === "." && JSON.stringify(server?.args) === '["mcp"]', "tag Plugin 必须使用跨平台 ./bin/drag mcp");
 
 for (const legalFile of ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"]) {

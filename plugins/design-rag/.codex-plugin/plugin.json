@@ -1,6 +1,6 @@
 {
   "name": "design-rag",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "DRAG 本地游戏策划案与配置表检索、分析和索引管理工具",
   "author": {
     "name": "tadazly"
@@ -21,6 +21,7 @@
     "longDescription": "使用本地只读索引模糊查找游戏策划案与配置表，分析玩法、流程、产出逻辑、历史改动和活动复用，并管理资料来源与增量索引。",
     "developerName": "tadazly",
     "category": "Productivity",
+    "websiteURL": "https://github.com/tadazly/design-rag",
     "capabilities": [
       "Read",
       "Write"
