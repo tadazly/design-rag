@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-23
+
 ### 新增
 
 - 新增 Claude Code Plugin：同一个 Plugin 同时支持 Codex 与 Claude Code，共用 Skill、MCP 工具、CLI、来源配置与本地索引。Release 中的 Plugin ZIP 解压后同时是两个宿主的本地 marketplace。
