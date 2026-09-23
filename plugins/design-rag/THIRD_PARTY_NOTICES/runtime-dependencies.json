@@ -1,0 +1,210 @@
+{
+  "dependencies": [
+    {
+      "path": "github.com/dustin/go-humanize",
+      "version": "v1.0.1",
+      "licenseFiles": [
+        "github.com_dustin_go-humanize_v1.0.1-LICENSE"
+      ]
+    },
+    {
+      "path": "github.com/giraffesyo/pdf",
+      "version": "v0.6.0",
+      "licenseFiles": [
+        "github.com_giraffesyo_pdf_v0.6.0-LICENSE"
+      ]
+    },
+    {
+      "path": "github.com/google/jsonschema-go",
+      "version": "v0.4.3",
+      "licenseFiles": [
+        "github.com_google_jsonschema-go_v0.4.3-LICENSE"
+      ]
+    },
+    {
+      "path": "github.com/mattn/go-isatty",
+      "version": "v0.0.24",
+      "licenseFiles": [
+        "github.com_mattn_go-isatty_v0.0.24-LICENSE"
+      ]
+    },
+    {
+      "path": "github.com/modelcontextprotocol/go-sdk",
+      "version": "v1.7.0",
+      "licenseFiles": [
+        "github.com_modelcontextprotocol_go-sdk_v1.7.0-LICENSE"
+      ]
+    },
+    {
+      "path": "github.com/ncruces/go-strftime",
+      "version": "v1.0.0",
+      "licenseFiles": [
+        "github.com_ncruces_go-strftime_v1.0.0-LICENSE"
+      ]
+    },
+    {
+      "path": "github.com/nkiri/xls",
+      "version": "v0.0.4",
+      "replacement": "./third_party/nkiri-xls",
+      "licenseFiles": [
+        "github.com_nkiri_xls_v0.0.4-LICENSE"
+      ],
+      "localSourceSha256": "9e16da743c934b31fe23d7f7e46e52721a41493944ee0b5189050f01ac91f886"
+    },
+    {
+      "path": "github.com/remyoudompheng/bigfft",
+      "version": "v0.0.0-20230129092748-24d4a6f8daec",
+      "licenseFiles": [
+        "github.com_remyoudompheng_bigfft_v0.0.0-20230129092748-24d4a6f8daec-LICENSE"
+      ]
+    },
+    {
+      "path": "github.com/richardlehane/mscfb",
+      "version": "v1.0.7",
+      "licenseFiles": [
+        "github.com_richardlehane_mscfb_v1.0.7-LICENSE.txt"
+      ]
+    },
+    {
+      "path": "github.com/richardlehane/msoleps",
+      "version": "v1.0.6",
+      "licenseFiles": [
+        "github.com_richardlehane_msoleps_v1.0.6-LICENSE.txt"
+      ]
+    },
+    {
+      "path": "github.com/segmentio/asm",
+      "version": "v1.1.3",
+      "licenseFiles": [
+        "github.com_segmentio_asm_v1.1.3-LICENSE"
+      ]
+    },
+    {
+      "path": "github.com/segmentio/encoding",
+      "version": "v0.5.4",
+      "licenseFiles": [
+        "github.com_segmentio_encoding_v0.5.4-LICENSE"
+      ]
+    },
+    {
+      "path": "github.com/tiendc/go-deepcopy",
+      "version": "v1.7.2",
+      "licenseFiles": [
+        "github.com_tiendc_go-deepcopy_v1.7.2-LICENSE"
+      ]
+    },
+    {
+      "path": "github.com/xuri/efp",
+      "version": "v0.0.1",
+      "licenseFiles": [
+        "github.com_xuri_efp_v0.0.1-LICENSE"
+      ]
+    },
+    {
+      "path": "github.com/xuri/excelize/v2",
+      "version": "v2.11.0",
+      "licenseFiles": [
+        "github.com_xuri_excelize_v2_v2.11.0-LICENSE"
+      ]
+    },
+    {
+      "path": "github.com/xuri/nfp",
+      "version": "v0.0.2-0.20250530014748-2ddeb826f9a9",
+      "licenseFiles": [
+        "github.com_xuri_nfp_v0.0.2-0.20250530014748-2ddeb826f9a9-LICENSE"
+      ]
+    },
+    {
+      "path": "github.com/yosida95/uritemplate/v3",
+      "version": "v3.0.2",
+      "licenseFiles": [
+        "github.com_yosida95_uritemplate_v3_v3.0.2-LICENSE"
+      ]
+    },
+    {
+      "path": "golang.org/x/crypto",
+      "version": "v0.53.0",
+      "licenseFiles": [
+        "golang.org_x_crypto_v0.53.0-LICENSE"
+      ]
+    },
+    {
+      "path": "golang.org/x/net",
+      "version": "v0.56.0",
+      "licenseFiles": [
+        "golang.org_x_net_v0.56.0-LICENSE"
+      ]
+    },
+    {
+      "path": "golang.org/x/oauth2",
+      "version": "v0.35.0",
+      "licenseFiles": [
+        "golang.org_x_oauth2_v0.35.0-LICENSE"
+      ]
+    },
+    {
+      "path": "golang.org/x/sync",
+      "version": "v0.22.0",
+      "licenseFiles": [
+        "golang.org_x_sync_v0.22.0-LICENSE"
+      ]
+    },
+    {
+      "path": "golang.org/x/sys",
+      "version": "v0.47.0",
+      "licenseFiles": [
+        "golang.org_x_sys_v0.47.0-LICENSE"
+      ]
+    },
+    {
+      "path": "golang.org/x/text",
+      "version": "v0.41.0",
+      "licenseFiles": [
+        "golang.org_x_text_v0.41.0-LICENSE"
+      ]
+    },
+    {
+      "path": "golang.org/x/time",
+      "version": "v0.15.0",
+      "licenseFiles": [
+        "golang.org_x_time_v0.15.0-LICENSE"
+      ]
+    },
+    {
+      "path": "modernc.org/libc",
+      "version": "v1.74.4",
+      "licenseFiles": [
+        "modernc.org_libc_v1.74.4-LICENSE",
+        "modernc.org_libc_v1.74.4-LICENSE-3RD-PARTY.md"
+      ]
+    },
+    {
+      "path": "modernc.org/mathutil",
+      "version": "v1.7.1",
+      "licenseFiles": [
+        "modernc.org_mathutil_v1.7.1-LICENSE"
+      ]
+    },
+    {
+      "path": "modernc.org/memory",
+      "version": "v1.11.0",
+      "licenseFiles": [
+        "modernc.org_memory_v1.11.0-LICENSE",
+        "modernc.org_memory_v1.11.0-LICENSE-GO",
+        "modernc.org_memory_v1.11.0-LICENSE-LOGO",
+        "modernc.org_memory_v1.11.0-LICENSE-MMAP-GO"
+      ]
+    },
+    {
+      "path": "modernc.org/sqlite",
+      "version": "v1.57.0",
+      "licenseFiles": [
+        "modernc.org_sqlite_v1.57.0-LICENSE",
+        "modernc.org_sqlite_v1.57.0-LICENSE-SQLITE",
+        "modernc.org_sqlite_v1.57.0-LICENSE-SQLITE_VEC"
+      ]
+    }
+  ],
+  "goRuntimeLicense": "Go-LICENSE.txt",
+  "schemaVersion": 1
+}
