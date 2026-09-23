@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -169,6 +170,30 @@ func TestMCPGoSDKContractSearchResourcesAndLifecycle(t *testing.T) {
 	retrieve, err := clientSession.CallTool(context.Background(), &mcp.CallToolParams{Name: "drag_retrieve", Arguments: map[string]any{"query": "轮盘奖励怎么配置", "maxDocuments": 30, "maxChars": 30000}})
 	if err != nil || retrieve.IsError || retrieve.StructuredContent == nil {
 		t.Fatalf("retrieve failed: result=%#v err=%v", retrieve, err)
+	}
+	var searchText compactSearchResponse
+	if err := json.Unmarshal([]byte(search.Content[0].(*mcp.TextContent).Text), &searchText); err != nil || len(searchText.Hits) != 1 || len(searchText.Hits[0].Excerpts) == 0 || !strings.HasPrefix(searchText.Hits[0].Excerpts[0].CitationID, "DRAG:") || searchText.Hits[0].DateSource == "" {
+		t.Fatalf("search text must be the compact projection: err=%v result=%#v", err, searchText)
+	}
+	retrieveText := retrieve.Content[0].(*mcp.TextContent).Text
+	var bundle compactRetrievalBundle
+	if err := json.Unmarshal([]byte(retrieveText), &bundle); err != nil || bundle.Kind != "drag_retrieval_bundle_v2" || len(bundle.Documents) != 1 || len(bundle.Documents[0].Chunks) == 0 {
+		t.Fatalf("retrieve text must group evidence by document: err=%v text=%s", err, retrieveText)
+	}
+	document, chunk := bundle.Documents[0], bundle.Documents[0].Chunks[0]
+	if chunk.Heading != "轮盘抽奖" {
+		t.Fatalf("compact evidence must keep the section heading of prose chunks: %#v", chunk)
+	}
+	if document.DocumentID == "" || document.DateSource == "" || !filepath.IsAbs(document.Path) || chunk.Hash == "" || chunk.Locator == "" || !strings.Contains(chunk.Link, chunk.Locator) || strings.Contains(chunk.Link, "DRAG:") {
+		t.Fatalf("compact evidence lost citation fields: %#v", document)
+	}
+	if strings.Contains(retrieveText, `\u003c`) || strings.Contains(retrieveText, `\u0026`) {
+		t.Fatalf("compact text must keep Markdown links readable: %s", retrieveText)
+	}
+	citationResult, err := clientSession.CallTool(context.Background(), &mcp.CallToolParams{Name: "drag_read_citation", Arguments: map[string]any{"citationId": chunk.CitationID}})
+	var citation compactCitationRead
+	if err != nil || citationResult.IsError || json.Unmarshal([]byte(citationResult.Content[0].(*mcp.TextContent).Text), &citation) != nil || citation.Content == "" || citation.Link != chunk.Link || citation.Hash != chunk.Hash || citation.DocumentID != document.DocumentID {
+		t.Fatalf("citation read-back mismatch: result=%#v err=%v", citation, err)
 	}
 	for _, invalid := range []struct {
 		name string

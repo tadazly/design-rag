@@ -388,16 +388,20 @@ d.absolute_path, d.relative_path, d.extension, d.title, d.family_key, d.family_c
 d.filesystem_modified_at, d.effective_updated_at_ms, d.effective_updated_at, d.date_source,
 d.content_hash, d.stale`
 
-func scanCandidate(scanner interface{ Scan(...any) error }, rank float64) (LexicalCandidateRow, error) {
-	var row LexicalCandidateRow
-	var stale int
-	err := scanner.Scan(
+func candidateDestinations(row *LexicalCandidateRow, stale *int) []any {
+	return []any{
 		&row.ChunkID, &row.ChunkDocumentID, &row.Ordinal, &row.SectionType, &row.HeadingPathJSON, &row.Locator, &row.Text, &row.ContentHash,
 		&row.ID, &row.CanonicalID, &row.SourceID, &row.SourceLabel, &row.SourceKind, &row.SourceIdentity,
 		&row.AbsolutePath, &row.RelativePath, &row.Extension, &row.Title, &row.FamilyKey, &row.FamilyConfidence,
 		&row.FilesystemModifiedAt, &row.EffectiveUpdatedAtMS, &row.EffectiveUpdatedAt, &row.DateSource,
-		&row.DocumentContentHash, &stale,
-	)
+		&row.DocumentContentHash, stale,
+	}
+}
+
+func scanCandidate(scanner interface{ Scan(...any) error }, rank float64) (LexicalCandidateRow, error) {
+	var row LexicalCandidateRow
+	var stale int
+	err := scanner.Scan(candidateDestinations(&row, &stale)...)
 	row.Stale = stale != 0
 	row.LexicalRank = rank
 	return row, err
@@ -406,15 +410,76 @@ func scanCandidate(scanner interface{ Scan(...any) error }, rank float64) (Lexic
 func scanRankedCandidate(scanner interface{ Scan(...any) error }) (LexicalCandidateRow, error) {
 	var row LexicalCandidateRow
 	var stale int
-	err := scanner.Scan(
-		&row.ChunkID, &row.ChunkDocumentID, &row.Ordinal, &row.SectionType, &row.HeadingPathJSON, &row.Locator, &row.Text, &row.ContentHash,
-		&row.ID, &row.CanonicalID, &row.SourceID, &row.SourceLabel, &row.SourceKind, &row.SourceIdentity,
-		&row.AbsolutePath, &row.RelativePath, &row.Extension, &row.Title, &row.FamilyKey, &row.FamilyConfidence,
-		&row.FilesystemModifiedAt, &row.EffectiveUpdatedAtMS, &row.EffectiveUpdatedAt, &row.DateSource,
-		&row.DocumentContentHash, &stale, &row.LexicalRank,
-	)
+	err := scanner.Scan(append(candidateDestinations(&row, &stale), &row.LexicalRank)...)
 	row.Stale = stale != 0
 	return row, err
+}
+
+// candidateFetchBatch 控制两阶段取数中每条回表 SQL 的 rowid 数量。
+const candidateFetchBatch = 500
+
+// rankedCandidateRows 执行只返回 (rowid, rank) 的排序查询，再按 rowid 批量回表读取完整候选行。
+// 命中的分块常有数万个，若排序时连同正文一起进入排序缓冲，读取与复制全文会成为主要开销；
+// 排序键与 LIMIT 不变，因此结果与单条 SQL 相同。
+func (database *IndexDatabase) rankedCandidateRows(ctx context.Context, rankQuery string, args []any) ([]LexicalCandidateRow, error) {
+	rows, err := database.db.QueryContext(ctx, rankQuery, args...)
+	if err != nil {
+		return nil, err
+	}
+	type rankedRowID struct {
+		rowID int64
+		rank  float64
+	}
+	ranked := []rankedRowID{}
+	for rows.Next() {
+		var item rankedRowID
+		if err := rows.Scan(&item.rowID, &item.rank); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		ranked = append(ranked, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+	byRowID := make(map[int64]LexicalCandidateRow, len(ranked))
+	for start := 0; start < len(ranked); start += candidateFetchBatch {
+		batch := ranked[start:min(len(ranked), start+candidateFetchBatch)]
+		values := make([]any, len(batch))
+		for index, item := range batch {
+			values[index] = item.rowID
+		}
+		fetched, err := database.db.QueryContext(ctx, `SELECT c.rowid,`+candidateSelect+` FROM chunks c JOIN documents d ON d.id=c.document_id WHERE d.deleted=0 AND c.rowid IN (`+placeholders(len(batch))+`)`, values...)
+		if err != nil {
+			return nil, err
+		}
+		for fetched.Next() {
+			var rowID int64
+			var row LexicalCandidateRow
+			var stale int
+			if err := fetched.Scan(append([]any{&rowID}, candidateDestinations(&row, &stale)...)...); err != nil {
+				fetched.Close()
+				return nil, err
+			}
+			row.Stale = stale != 0
+			byRowID[rowID] = row
+		}
+		if err := fetched.Err(); err != nil {
+			fetched.Close()
+			return nil, err
+		}
+		fetched.Close()
+	}
+	result := make([]LexicalCandidateRow, 0, len(ranked))
+	for _, item := range ranked {
+		if row, ok := byRowID[item.rowID]; ok {
+			row.LexicalRank = item.rank
+			result = append(result, row)
+		}
+	}
+	return result, nil
 }
 
 func collectRankedCandidates(rows *sql.Rows) ([]LexicalCandidateRow, error) {
@@ -454,7 +519,7 @@ func (database *IndexDatabase) LexicalCandidates(ctx context.Context, matchQuery
 	}
 	sourceWhere, sourceValues := candidateSourceWhere(filter, "d")
 	canonicalWhere, canonicalValues := candidateCanonicalWhere(filter)
-	query := `SELECT ` + candidateSelect + `, bm25(chunks_terms,8.0,6.0,5.0,1.0)
+	query := `SELECT c.rowid, bm25(chunks_terms,8.0,6.0,5.0,1.0)
 FROM chunks_terms JOIN chunks c ON c.rowid=chunks_terms.rowid JOIN documents d ON d.id=c.document_id
 WHERE chunks_terms MATCH ? AND d.deleted=0` + sourceWhere + canonicalWhere + `
 ORDER BY bm25(chunks_terms,8.0,6.0,5.0,1.0) ASC,d.effective_updated_at_ms DESC,d.relative_path ASC,d.id ASC,c.ordinal ASC,c.id ASC LIMIT ?`
@@ -462,11 +527,60 @@ ORDER BY bm25(chunks_terms,8.0,6.0,5.0,1.0) ASC,d.effective_updated_at_ms DESC,d
 	args = append(args, sourceValues...)
 	args = append(args, canonicalValues...)
 	args = append(args, limit)
-	rows, err := database.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, err
+	return database.rankedCandidateRows(ctx, query, args)
+}
+
+// WeightedFTSMatch 是一个带权重的 FTS5 MATCH 表达式。
+type WeightedFTSMatch struct {
+	Match  string
+	Weight float64
+}
+
+// CountFTSMatches 返回 MATCH 表达式命中的分块数，用于计算检索概念的区分度。
+func (database *IndexDatabase) CountFTSMatches(ctx context.Context, match string) (int, error) {
+	var count int
+	err := database.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM chunks_terms WHERE chunks_terms MATCH ?", match).Scan(&count)
+	return count, err
+}
+
+// ChunkCount 返回未删除分块总数。
+func (database *IndexDatabase) ChunkCount(ctx context.Context) (int, error) {
+	var count int
+	err := database.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM chunks").Scan(&count)
+	return count, err
+}
+
+// ConceptCandidates 按命中的检索概念加权排序候选分块。chunks_terms 是 detail=column 的 contentless 表，
+// FTS5 在这种配置下的 bm25 恒为 0，因此由调用方按概念区分度给出权重；返回的 rank 为负的权重和，数值越小越相关。
+// 候选先按文档内最高分给文档排序，再在文档内按分块得分排序，每份文档最多保留 perDocument 个分块：
+// 只在标题或路径命中稀有概念的文档，其余分块不会被别处大量命中泛化词的分块挤出候选上限，
+// 单份文档也不会占满候选。同分再按有效日期从新到旧。
+func (database *IndexDatabase) ConceptCandidates(ctx context.Context, matches []WeightedFTSMatch, limit, perDocument int, filter CandidateSourceFilter) ([]LexicalCandidateRow, error) {
+	if len(matches) == 0 || !database.HasTable("chunks_terms") {
+		return nil, nil
 	}
-	return collectRankedCandidates(rows)
+	sourceWhere, sourceValues := candidateSourceWhere(filter, "d")
+	canonicalWhere, canonicalValues := candidateCanonicalWhere(filter)
+	branches := make([]string, len(matches))
+	args := []any{}
+	for index, match := range matches {
+		branches[index] = "SELECT rowid, ? FROM chunks_terms WHERE chunks_terms MATCH ?"
+		args = append(args, match.Weight, match.Match)
+	}
+	query := `WITH hits(chunk_rowid, weight) AS (` + strings.Join(branches, " UNION ALL ") + `),
+scored AS (SELECT chunk_rowid, SUM(weight) AS score FROM hits GROUP BY chunk_rowid),
+ranked AS (SELECT c.rowid AS chunk_rowid, scored.score AS score,
+MAX(scored.score) OVER (PARTITION BY d.id) AS document_score,
+ROW_NUMBER() OVER (PARTITION BY d.id ORDER BY scored.score DESC,c.ordinal ASC,c.id ASC) AS document_rank,
+d.effective_updated_at_ms AS updated_at,d.relative_path AS relative_path,d.id AS document_id,c.ordinal AS ordinal,c.id AS chunk_id
+FROM scored JOIN chunks c ON c.rowid=scored.chunk_rowid JOIN documents d ON d.id=c.document_id
+WHERE d.deleted=0` + sourceWhere + canonicalWhere + `)
+SELECT chunk_rowid, -score FROM ranked WHERE document_rank<=?
+ORDER BY document_score DESC,updated_at DESC,relative_path ASC,document_id ASC,score DESC,ordinal ASC,chunk_id ASC LIMIT ?`
+	args = append(args, sourceValues...)
+	args = append(args, canonicalValues...)
+	args = append(args, max(1, perDocument), limit)
+	return database.rankedCandidateRows(ctx, query, args)
 }
 
 func (database *IndexDatabase) TrigramCandidates(ctx context.Context, matchQuery string, limit int, filter CandidateSourceFilter) ([]LexicalCandidateRow, error) {
@@ -475,7 +589,7 @@ func (database *IndexDatabase) TrigramCandidates(ctx context.Context, matchQuery
 	}
 	sourceWhere, sourceValues := candidateSourceWhere(filter, "d")
 	canonicalWhere, canonicalValues := candidateCanonicalWhere(filter)
-	query := `SELECT ` + candidateSelect + `, bm25(chunks_trigram,8.0,6.0,5.0)
+	query := `SELECT c.rowid, bm25(chunks_trigram,8.0,6.0,5.0)
 FROM chunks_trigram JOIN chunks c ON c.rowid=chunks_trigram.rowid JOIN documents d ON d.id=c.document_id
 WHERE chunks_trigram MATCH ? AND d.deleted=0` + sourceWhere + canonicalWhere + `
 ORDER BY bm25(chunks_trigram,8.0,6.0,5.0) ASC,d.effective_updated_at_ms DESC,d.relative_path ASC,d.id ASC,c.ordinal ASC,c.id ASC LIMIT ?`
@@ -483,11 +597,7 @@ ORDER BY bm25(chunks_trigram,8.0,6.0,5.0) ASC,d.effective_updated_at_ms DESC,d.r
 	args = append(args, sourceValues...)
 	args = append(args, canonicalValues...)
 	args = append(args, limit)
-	rows, err := database.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	return collectRankedCandidates(rows)
+	return database.rankedCandidateRows(ctx, query, args)
 }
 
 func (database *IndexDatabase) LikeCandidates(ctx context.Context, terms []string, limit int, filter CandidateSourceFilter) ([]LexicalCandidateRow, error) {
@@ -511,15 +621,11 @@ func (database *IndexDatabase) LikeCandidates(ctx context.Context, terms []strin
 		args = append(args, value, value, value)
 	}
 	args = append(args, limit)
-	query := `SELECT ` + candidateSelect + `, 10.0
+	query := `SELECT c.rowid, 10.0
 FROM chunks c JOIN documents d ON d.id=c.document_id
 WHERE d.deleted=0` + sourceWhere + canonicalWhere + ` AND (` + strings.Join(predicates, " OR ") + `)
 ORDER BY d.effective_updated_at_ms DESC,d.relative_path ASC,d.id ASC,c.ordinal ASC,c.id ASC LIMIT ?`
-	rows, err := database.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	return collectRankedCandidates(rows)
+	return database.rankedCandidateRows(ctx, query, args)
 }
 
 func (database *IndexDatabase) DocumentExactCandidates(ctx context.Context, terms []string, limit int, filter CandidateSourceFilter) ([]LexicalCandidateRow, error) {

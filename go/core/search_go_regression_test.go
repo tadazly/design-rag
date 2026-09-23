@@ -29,7 +29,11 @@ func newGoSearchService(t *testing.T, definitions []goSearchSource) *RuntimeServ
 			t.Fatal(err)
 		}
 		for name, content := range definition.files {
-			if err := os.WriteFile(filepath.Join(sourceRoot, name), []byte(content), 0o644); err != nil {
+			path := filepath.Join(sourceRoot, filepath.FromSlash(name))
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 				t.Fatal(err)
 			}
 		}

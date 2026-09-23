@@ -128,11 +128,15 @@ GUI 每 1.5 秒检查外部配置 hash；若 CLI 或 MCP 修改来源，会刷�
 
 Go Plugin runtime 的 `SearchEngine` 独立提供离线词法检索：标题/heading/路径/正文加权、CJK shingles、trigram、领域同义词、section filter、exact ID、活动身份 gate、table-intent 配额与 newest-first；SQL cutoff 使用日期、路径、document/chunk identity 的确定性 tie-break，并实现 search/retrieve/citation/version API。桌面 TypeScript SearchEngine 在迁移期保留，真实语料 A/B 要求两个引擎分别执行；完整文档/chunk 投影必须一致，强 latest top-1、Recall、identity recall 和 citation 必须通过，宽查询允许 Go 的意图排序不同，不把旧引擎全序复制当作准确性。可选本地 Ollama embedding 只作增强；未启用、未就绪或覆盖不完整时返回实际模式，不把词法结果伪装成完整语义检索。
 
+Go 词法相关度以“查询概念”为单位：先去掉“我要”“有哪些”等提问片段，以及“表格”“逻辑”这类表达提问方式的词（策划页名普遍含“面板&逻辑”，把“逻辑”当内容词会压过“奖励数值”等真正相关的页），再用领域词表把长片段切成关键词，每个关键词与其同义词组成一个概念。概念权重取关键词本身 FTS 匹配分块数对应的 BM25 IDF，只有关键词在索引中不存在时才用同义词分支的权重，并在同一 index revision 内缓存。`chunks_terms` 是 contentless、`detail=column` 的 FTS5 表，`bm25()` 恒为 0，所以候选 SQL 不按 `bm25()` 排序，而是把每个概念的“任意字段”与“标题/层级/路径”MATCH 分支按权重求和；候选先按文档内最高分给文档排序，再在文档内按分块得分排序，每份文档最多保留 `max(8, 摘录数×3)` 个分块。这样稀有实体名和系统名不会因为更旧而被截断，只在标题命中实体的文档，其“奖励数值”等页也不会被别处大量命中泛化词的分块挤出候选。文档得分按概念累加最强命中位置：标题相同 1，标题包含与配表名称列单元格 0.85，配表所在目录 0.8，其他完整单元格 0.75，层级标题或路径 0.65，仅正文 0.3；同义词命中计一半，同一概念取关键词与同义词中较强的一处。“实体名+编号”形式的活动身份区分独立名称与嵌在更长名称里的命中：存在独立命中时，只在更长名称里命中的文档不进入身份门槛，配表意图的检索也会排除它们。相关度门槛按来源类型分别计算。候选行先只取 rowid 与排序键，再按批次取完整字段，避免为被截断的候选读取正文。
+
 默认结果严格按 `effectiveUpdatedAt DESC → relevance DESC → relativePath ASC`。业务日期优先级为“文件名日期 → strong version evidence → 路径日期 → weak cover/version evidence → embedded modified → filesystem mtime”；同一范围内多个合法日期取最新值，每条结果返回 `dateSource`。
 
-`retrieve` 返回固定 schema 的 evidence bundle，包含查询、index revision、实际检索模式、文档、chunk、citationId、locator、内容哈希和字符预算。它只检索，不生成自然语言答案。
+`retrieve` 返回固定 schema 的 evidence bundle，包含查询、index revision、实际检索模式、文档、chunk、citationId、locator、内容哈希和字符预算。它只检索，不生成自然语言答案。未指定来源类型时分别检索策划与配表：有配表意图的问题以配表为主，配表按相关度挑选后再按日期展示，因为汇总表几乎每个版本都会更新，按日期挑选会挤掉目录、标题或名称列直接命中的专用表；辅助来源和剩余名额也按相关度补位。
 
-每条 citation 和 evidence 还包含 `sourceLink`（`fileName`、`absolutePath`、`locator`、`markdown`）。Codex 回答使用 `sourceLink.markdown` 显示真实文档与原文位置；`DRAG:chunk_*` 只用于协议回读，不作为用户可见引用。桌面 host 只接受当前回合真实检索返回的 citationId，并要求回答区分“证据事实 / 推断 / 待确认”；未知或旧回合 citation 不会被渲染为引用。文件链接是否直接启动关联应用由 Codex host 决定，locator 始终保留可人工核对的位置。
+CLI `--json` 与桌面协议返回上述完整结构。MCP 工具结果改为面向模型的紧凑投影：`drag_search` 的每个 hit 只保留 documentId、标题、来源类型、日期与 `dateSource`、真实路径、familyKey、两位小数相关度和短摘录（citationId、locator、section、heading、hash、text）；`drag_retrieve` 返回 `drag_retrieval_bundle_v2`，按文档分组，每个片段保留 citationId、locator、section、章节标题（表格 locator 已含 sheet 名时省略）、hash、`link`（即 `sourceLink.markdown`）和正文，未放入证据的命中列在 `otherCandidates`；`drag_read_citation` 与 `drag_list_versions` 同样去掉重复元数据。JSON 文本不转义 HTML 字符，Markdown 链接保持可读。
+
+每条 citation 和 evidence 还包含 `sourceLink`（`fileName`、`absolutePath`、`locator`、`markdown`）。Codex 与 Claude Code 回答使用 MCP 结果中的 `link`（即 `sourceLink.markdown`）显示真实文档与原文位置；`DRAG:chunk_*` 只用于协议回读，不作为用户可见引用。桌面 host 只接受当前回合真实检索返回的 citationId，并要求回答区分“证据事实 / 推断 / 待确认”；未知或旧回合 citation 不会被渲染为引用。文件链接是否直接启动关联应用由 Codex host 决定，locator 始终保留可人工核对的位置。
 
 ## MCP
 

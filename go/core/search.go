@@ -13,8 +13,10 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"golang.org/x/text/collate"
 	"golang.org/x/text/language"
@@ -69,6 +71,100 @@ type SearchEngine struct {
 	database      *IndexDatabase
 	getConfig     func() AppConfig
 	refreshConfig func() error
+
+	ftsStatsMutex    sync.Mutex
+	ftsStatsRevision int64
+	ftsChunkTotal    int
+	ftsMatchCounts   map[string]int
+}
+
+// ftsIDF 返回 MATCH 表达式的 BM25 IDF；命中数按索引 revision 缓存，避免重复计数。
+func (engine *SearchEngine) ftsIDF(ctx context.Context, revision int64, expression string) (float64, error) {
+	engine.ftsStatsMutex.Lock()
+	defer engine.ftsStatsMutex.Unlock()
+	if engine.ftsMatchCounts == nil || engine.ftsStatsRevision != revision {
+		total, err := engine.database.ChunkCount(ctx)
+		if err != nil {
+			return 0, err
+		}
+		engine.ftsStatsRevision, engine.ftsChunkTotal, engine.ftsMatchCounts = revision, total, map[string]int{}
+	}
+	count, ok := engine.ftsMatchCounts[expression]
+	if !ok {
+		var err error
+		if count, err = engine.database.CountFTSMatches(ctx, expression); err != nil {
+			return 0, err
+		}
+		if len(engine.ftsMatchCounts) >= 4096 {
+			engine.ftsMatchCounts = map[string]int{}
+		}
+		engine.ftsMatchCounts[expression] = count
+	}
+	if count == 0 {
+		return 0, nil
+	}
+	total := float64(max(engine.ftsChunkTotal, count))
+	return math.Log(1 + (total-float64(count)+0.5)/(float64(count)+0.5)), nil
+}
+
+// conceptFTSMatches 为每个检索概念生成“任意字段”和“标题/层级/路径”两个 MATCH 分支，
+// 权重取该概念在全部分块中的区分度；同义词合成一个 OR 分支并减半，使稀有的实体名、
+// 系统名优先于“配置”“表格”这类泛化词进入候选。概念权重只取关键词本身的区分度，
+// 关键词在索引中不存在时才用同义词分支的权重，泛化词不会借稀有同义词抬高权重。
+func (engine *SearchEngine) conceptFTSMatches(ctx context.Context, revision int64, concepts []queryConcept) ([]WeightedFTSMatch, error) {
+	result := []WeightedFTSMatch{}
+	for conceptIndex := range concepts {
+		concept := &concepts[conceptIndex]
+		primaryWeight, alternateWeight := 0.0, 0.0
+		alternates := []string{}
+		for _, alternate := range concept.alternates {
+			if expression := FTSConjunction(alternate); expression != "" {
+				alternates = append(alternates, "("+expression+")")
+			}
+		}
+		branches := []struct {
+			expression string
+			factor     float64
+		}{{FTSConjunction(concept.primary), 1}, {strings.Join(alternates, " OR "), 0.5}}
+		for index, branch := range branches {
+			if branch.expression == "" {
+				continue
+			}
+			expression := "(" + branch.expression + ")"
+			idf, err := engine.ftsIDF(ctx, revision, expression)
+			if err != nil {
+				return nil, err
+			}
+			if idf <= 0 {
+				continue
+			}
+			weight := idf * branch.factor
+			if index == 0 {
+				primaryWeight = weight
+			} else {
+				alternateWeight = weight
+			}
+			result = append(result, WeightedFTSMatch{Match: expression, Weight: weight}, WeightedFTSMatch{Match: "{title_terms heading_terms path_terms} : " + expression, Weight: weight})
+		}
+		concept.weight = primaryWeight
+		if concept.weight == 0 {
+			concept.weight = alternateWeight
+		}
+	}
+	// 索引中完全没有词元的概念（如只能靠标题子串命中的词）取已知概念的最小权重，避免被忽略。
+	minimum := 0.0
+	for _, concept := range concepts {
+		if concept.weight > 0 && (minimum == 0 || concept.weight < minimum) {
+			minimum = concept.weight
+		}
+	}
+	for index := range concepts {
+		if concepts[index].weight == 0 {
+			concepts[index].weight = minimum
+		}
+	}
+	normalizeConceptWeights(concepts)
+	return result, nil
 }
 
 func (engine *SearchEngine) refresh() error {
@@ -165,35 +261,236 @@ func normalizeCandidateFields(row LexicalCandidateRow) normalizedCandidateFields
 	return normalizedCandidateFields{title: title, heading: heading, relativePath: relativePath, text: text, haystack: strings.Join([]string{title, relativePath, heading, text}, "\n")}
 }
 
-func scoreSearchCandidate(row LexicalCandidateRow, normalized normalizedCandidateFields, terms []string, semanticScore float64) scoredCandidate {
+// queryConcept 是查询中的一个检索概念：关键词本身为 primary，与它相关的领域同义词为 alternates。
+// weight 是该概念在全部概念中的相对区分度，所有概念的 weight 之和为 1。
+type queryConcept struct {
+	primary    string
+	alternates []string
+	weight     float64
+	identity   *documentIdentityGroup
+}
+
+// identityKeywordPattern 匹配“实体名+编号”形式的关键词，如“晨星888”“星河龙888”。
+var identityKeywordPattern = regexp.MustCompile(`^(\p{Han}{2,24})(\d{2,})$`)
+
+// identityMatchStrength 用容忍间隔的身份匹配判断“晨星888”是否对应“晨星·守望者888活动”这类标题。
+func identityMatchStrength(normalized normalizedCandidateFields, group documentIdentityGroup) float64 {
+	switch {
+	case identityGroupAtBoundary(normalized.title, group):
+		return 0.8
+	case identityGroupAtBoundary(normalized.heading, group) || identityGroupAtBoundary(normalized.relativePath, group):
+		return 0.6
+	case identityGroupScore(normalized.title, group) > 0:
+		return 0.5
+	case identityGroupScore(normalized.heading, group) > 0 || identityGroupScore(normalized.relativePath, group) > 0:
+		return 0.4
+	case strings.Contains(normalized.text, group.Terms[0]) && strings.Contains(normalized.text, group.Terms[1]):
+		return 0.25
+	default:
+		return 0
+	}
+}
+
+// normalizeConceptWeights 把概念权重归一化；没有可用权重时平均分配。
+func normalizeConceptWeights(concepts []queryConcept) {
+	total := 0.0
+	for _, concept := range concepts {
+		total += math.Max(0, concept.weight)
+	}
+	for index := range concepts {
+		if total > 0 {
+			concepts[index].weight = math.Max(0, concepts[index].weight) / total
+		} else {
+			concepts[index].weight = 1 / float64(len(concepts))
+		}
+	}
+}
+
+// buildQueryConcepts 以关键词为单位组织相关度：命中关键词本身得满分，只命中同义词得半分，
+// 文档不能靠命中同一概念的多个同义词累积相关度。整句和子句只作为短语加分，不计入覆盖率。
+// 抽不出关键词时退回旧行为，每个扩展词各自成为一个概念。
+func buildQueryConcepts(query string, synonyms bool) ([]queryConcept, []string) {
+	normalized := NormalizeText(query)
+	keywords := QueryKeywordTerms(normalized)
+	if len(keywords) == 0 {
+		concepts := []queryConcept{}
+		for _, term := range uniqueNormalizedTerms(ExpandQueryTerms(query, synonyms)) {
+			concepts = append(concepts, queryConcept{primary: term})
+		}
+		normalizeConceptWeights(concepts)
+		return concepts, nil
+	}
+	concepts := make([]queryConcept, 0, len(keywords))
+	for _, keyword := range keywords {
+		concept := queryConcept{primary: keyword}
+		if match := identityKeywordPattern.FindStringSubmatch(keyword); match != nil {
+			concept.identity = &documentIdentityGroup{Phrase: keyword, Terms: []string{match[1], match[2]}}
+		}
+		if synonyms {
+			for _, group := range synonymGroups {
+				related := false
+				for _, term := range group {
+					term = NormalizeText(term)
+					if strings.Contains(keyword, term) || strings.Contains(term, keyword) {
+						related = true
+						break
+					}
+				}
+				if related {
+					for _, term := range group {
+						if term = NormalizeText(term); term != keyword {
+							concept.alternates = appendUnique(concept.alternates, term)
+						}
+					}
+				}
+			}
+		}
+		concepts = append(concepts, concept)
+	}
+	normalizeConceptWeights(concepts)
+	phrases := []string{}
+	for _, value := range append([]string{normalized}, queryClauseSeparator.Split(normalized, -1)...) {
+		if utf8.RuneCountInString(value) >= 4 && !containsString(keywords, value) {
+			phrases = appendUnique(phrases, value)
+		}
+	}
+	return concepts, phrases
+}
+
+// exactCellColumn 返回配表行中值恰好等于 term 的单元格列号（规范化后的行形如 “| i=晨星守望者 | j=3826”）；
+// 没有时返回空串。定义实体的配置行通常以名称为完整单元格，汇总表多在长文本里顺带提到。
+func exactCellColumn(text, term string) string {
+	needle := "=" + term
+	for offset := 0; ; {
+		index := strings.Index(text[offset:], needle)
+		if index < 0 {
+			return ""
+		}
+		start := offset + index
+		end := start + len(needle)
+		column := start
+		for column > 0 && text[column-1] >= 'a' && text[column-1] <= 'z' {
+			column--
+		}
+		if column < start && column > 0 && text[column-1] == ' ' && (end == len(text) || strings.HasPrefix(text[end:], " |") || strings.HasPrefix(text[end:], " 行 ")) {
+			return text[column:start]
+		}
+		offset = end
+	}
+}
+
+// isNameColumn 判断表头中该列是否为名称列，如 “| i=name |”、“| c=petname |”、“| b=名称 |”。
+func isNameColumn(text, column string) bool {
+	header, _, _ := strings.Cut(text, " 行 ")
+	marker := " " + column + "="
+	for offset := 0; ; {
+		index := strings.Index(header[offset:], marker)
+		if index < 0 {
+			return false
+		}
+		value := header[offset+index+len(marker):]
+		if cut := strings.Index(value, " |"); cut >= 0 {
+			value = value[:cut]
+		}
+		if strings.HasSuffix(value, "name") || value == "名称" || value == "名字" {
+			return true
+		}
+		offset += index + len(marker)
+	}
+}
+
+// fieldMatchStrength 返回 term 在文档中最强命中位置的强度：标题完全相同 1，标题包含 0.85，
+// 名称列单元格完全相同 0.85，配表所在目录名 0.8，其他单元格完全相同 0.75，层级标题或路径 0.65，
+// 仅正文 0.3；未命中返回 0。配置仓库按系统分目录（如“扭蛋机\alphaLottery.xlsx”），目录名就是表的归属。
+func fieldMatchStrength(normalized normalizedCandidateFields, term string, table bool) float64 {
+	switch {
+	case normalized.title == term:
+		return 1
+	case strings.Contains(normalized.title, term):
+		return 0.85
+	}
+	if table {
+		column := exactCellColumn(normalized.text, term)
+		switch {
+		case column != "" && isNameColumn(normalized.text, column):
+			return 0.85
+		case strings.Contains(pathDirectory(normalized.relativePath), term):
+			return 0.8
+		case column != "":
+			return 0.75
+		}
+	}
+	switch {
+	case strings.Contains(normalized.heading, term) || strings.Contains(normalized.relativePath, term):
+		return 0.65
+	case strings.Contains(normalized.text, term):
+		return 0.3
+	default:
+		return 0
+	}
+}
+
+// pathDirectory 返回相对路径中文件名之前的目录部分。
+func pathDirectory(relativePath string) string {
+	if index := strings.LastIndexAny(relativePath, `\/`); index >= 0 {
+		return relativePath[:index]
+	}
+	return ""
+}
+
+// lexicalRankBonus 把候选 SQL 的 rank（越负越相关）映射为 0-0.06 的加分；精确锚点候选的 rank 为 0，
+// 视为最强命中；LIKE 兜底候选没有可比的相关度，不加分。概念覆盖已经决定主要相关度，这里只做细分。
+func lexicalRankBonus(rank float64) float64 {
+	switch {
+	case rank == 0:
+		return 0.06
+	case rank < 0:
+		return -rank / (1 - rank) * 0.06
+	default:
+		return 0
+	}
+}
+
+// scoreSearchCandidate 按概念权重累加字段强度：稀有概念命中在标题、路径或名称单元格时得分最高，
+// 只在正文顺带提到时得分较低。命中关键词本身计全额，命中同义词计一半，同一概念取两者中较强的一处，
+// 例如“产出”只在正文出现、而层级标题是“奖励数值”时按后者计。
+func scoreSearchCandidate(row LexicalCandidateRow, normalized normalizedCandidateFields, concepts []queryConcept, phrases []string, semanticScore float64) scoredCandidate {
 	matched := []string{}
-	for _, term := range terms {
-		if strings.Contains(normalized.title, term) || strings.Contains(normalized.heading, term) || strings.Contains(normalized.relativePath, term) || strings.Contains(normalized.text, term) {
-			matched = append(matched, term)
+	table := row.SourceKind == "table"
+	strength := 0.0
+	for _, concept := range concepts {
+		value := 0.0
+		if concept.identity != nil {
+			value = identityMatchStrength(normalized, *concept.identity)
+		} else {
+			value = fieldMatchStrength(normalized, concept.primary, table)
 		}
+		if value > 0 {
+			matched = append(matched, concept.primary)
+		}
+		if value < 0.5 {
+			best, bestTerm := 0.0, ""
+			for _, alternate := range concept.alternates {
+				if alternateValue := fieldMatchStrength(normalized, alternate, table); alternateValue > best {
+					best, bestTerm = alternateValue, alternate
+				}
+			}
+			if best/2 > value {
+				value = best / 2
+				matched = append(matched, bestTerm)
+			}
+		}
+		strength += concept.weight * value
 	}
-	coverage := float64(len(matched)) / float64(max(1, len(terms)))
-	score := 0.18 + coverage*0.3
-	for _, term := range matched {
-		if normalized.title == term {
-			score += 0.24
-		} else if strings.Contains(normalized.title, term) {
-			score += 0.16
-		}
-		if strings.Contains(normalized.heading, term) {
-			score += 0.1
-		}
-		if strings.Contains(normalized.relativePath, term) {
+	score := 0.18 + strength*0.72
+	for _, phrase := range phrases {
+		if strings.Contains(normalized.title, phrase) || strings.Contains(normalized.heading, phrase) || strings.Contains(normalized.relativePath, phrase) {
 			score += 0.08
-		}
-		if strings.Contains(normalized.text, term) {
-			score += 0.04
+		} else if strings.Contains(normalized.text, phrase) {
+			score += 0.03
 		}
 	}
-	score += 1 / (1 + math.Max(0, math.Abs(row.LexicalRank))) * 0.16
-	if strings.Contains(row.Title, "复用") || strings.Contains(row.RelativePath, "复用") {
-		score += 0.08
-	}
+	score += lexicalRankBonus(row.LexicalRank)
 	if semanticScore > 0 {
 		score = score*0.72 + semanticScore*0.28
 	}
@@ -234,13 +531,29 @@ func init() {
 }
 
 func compactIdentity(value string) string {
+	identity, _ := compactIdentityJoins(value)
+	return identity
+}
+
+// compactIdentityJoins 在 compactIdentity 的基础上记录哪些字节偏移处的汉字在原文中紧跟另一个汉字。
+// 实体名紧跟汉字时只是更长名称的一部分，如“破晨星·裂空”中的“晨星”。
+func compactIdentityJoins(value string) (string, map[int]bool) {
 	var builder strings.Builder
+	joined := map[int]bool{}
+	previousHan := false
 	for _, r := range NormalizeText(value) {
-		if isCJK(r) || unicode.IsLetter(r) || unicode.IsNumber(r) {
-			builder.WriteRune(r)
+		if !isCJK(r) && !unicode.IsLetter(r) && !unicode.IsNumber(r) {
+			previousHan = false
+			continue
 		}
+		han := unicode.Is(unicode.Han, r)
+		if han && previousHan {
+			joined[builder.Len()] = true
+		}
+		builder.WriteRune(r)
+		previousHan = han
 	}
-	return builder.String()
+	return builder.String(), joined
 }
 
 func trimActivityEntityLead(value string) string {
@@ -276,19 +589,35 @@ func extractDocumentIdentityGroups(query string) []documentIdentityGroup {
 	return result
 }
 
+// identityGroupScore 返回活动身份在 value 中的匹配分：整体短语命中 4，按顺序分散命中 2-3.5（间隔越长越低）；
+// 实体名嵌在更长的名称里时再减 1，使“晨星888”优先对应“晨星·守望者888”而不是“破晨星·裂空888”。
 func identityGroupScore(value string, group documentIdentityGroup) float64 {
-	identity := compactIdentity(value)
-	if identity == "" {
-		return 0
+	score, embedded := matchIdentityGroup(value, group)
+	if embedded {
+		score--
 	}
-	if strings.Contains(identity, group.Phrase) {
-		return 4
+	return score
+}
+
+// identityGroupAtBoundary 判断 value 中的活动身份是否以独立名称出现。
+func identityGroupAtBoundary(value string, group documentIdentityGroup) bool {
+	score, embedded := matchIdentityGroup(value, group)
+	return score > 0 && !embedded
+}
+
+func matchIdentityGroup(value string, group documentIdentityGroup) (float64, bool) {
+	identity, joined := compactIdentityJoins(value)
+	if identity == "" {
+		return 0, false
+	}
+	if index := strings.Index(identity, group.Phrase); index >= 0 {
+		return 4, joined[index]
 	}
 	cursor, first, last := 0, -1, -1
 	for _, term := range group.Terms {
 		position := strings.Index(identity[cursor:], term)
 		if position < 0 {
-			return 0
+			return 0, false
 		}
 		position += cursor
 		if first < 0 {
@@ -302,7 +631,17 @@ func identityGroupScore(value string, group documentIdentityGroup) float64 {
 		termLength += len(term)
 	}
 	gap := max(0, last-first-termLength)
-	return math.Max(2, 3.5-math.Min(1.5, float64(gap)/8))
+	return math.Max(2, 3.5-math.Min(1.5, float64(gap)/8)), joined[first]
+}
+
+// namedDocumentIdentityAtBoundary 判断标题或路径中是否有以独立名称出现的活动身份。
+func namedDocumentIdentityAtBoundary(title, relativePath string, groups []documentIdentityGroup) bool {
+	for _, group := range groups {
+		if identityGroupAtBoundary(title, group) || identityGroupAtBoundary(relativePath, group) {
+			return true
+		}
+	}
+	return false
 }
 
 func namedDocumentIdentityScore(title, relativePath string, groups []documentIdentityGroup) float64 {
@@ -328,8 +667,12 @@ func QueryAnchorSignals(query string) queryAnchorSignalSet {
 			continue
 		}
 		normalized := NormalizeText(anchor)
+		// “ID”等只表示字段类别；两个字母的大写缩写也过短，不能作为必须命中的文档锚点。
+		if genericASCIIQueryWords[normalized] {
+			continue
+		}
 		explicit = appendUnique(explicit, normalized)
-		if uppercasePattern.MatchString(anchor) || documentMarkPattern.MatchString(anchor) || len(anchor) >= 8 {
+		if uppercasePattern.MatchString(anchor) && len(anchor) >= 3 || documentMarkPattern.MatchString(anchor) || len(anchor) >= 8 {
 			document = appendUnique(document, normalized)
 		}
 	}
@@ -611,8 +954,10 @@ func (engine *SearchEngine) search(ctx context.Context, request SearchRequest, s
 	}
 	effectiveRequest := request
 	effectiveRequest.SourceIDs = eligibleIDs
+	concepts, phrases := buildQueryConcepts(query, config.Search.SynonymExpansion)
+	lexicalTerms := QueryLexicalTerms(query, config.Search.SynonymExpansion)
 	lexicalTokens := []string{}
-	for _, term := range expandedTerms {
+	for _, term := range lexicalTerms {
 		for _, token := range CJKSearchTerms(term) {
 			if len([]rune(token)) >= 2 {
 				lexicalTokens = appendUnique(lexicalTokens, token)
@@ -706,7 +1051,16 @@ func (engine *SearchEngine) search(ctx context.Context, request SearchRequest, s
 			}
 			addRows(exactRows, true)
 		}
-		rows, err := engine.database.LexicalCandidates(ctx, strings.Join(lexicalParts, " OR "), indexedLimit, filter)
+		conceptMatches, err := engine.conceptFTSMatches(ctx, snapshotRevision, concepts)
+		if err != nil {
+			return response, err
+		}
+		var rows []LexicalCandidateRow
+		if len(conceptMatches) > 0 {
+			rows, err = engine.database.ConceptCandidates(ctx, conceptMatches, indexedLimit, max(8, excerptLimit*3), filter)
+		} else {
+			rows, err = engine.database.LexicalCandidates(ctx, strings.Join(lexicalParts, " OR "), indexedLimit, filter)
+		}
 		if err != nil {
 			return response, err
 		}
@@ -740,7 +1094,7 @@ func (engine *SearchEngine) search(ctx context.Context, request SearchRequest, s
 			allCovered = allCovered && exactCoverage[anchor]
 		}
 		if !allCovered && indexedSignalCount < fallbackFloor && len(merged) < fallbackFloor*4 {
-			rows, err := engine.database.LikeCandidates(ctx, expandedTerms, 800, filter)
+			rows, err := engine.database.LikeCandidates(ctx, lexicalTerms, 800, filter)
 			if err != nil {
 				return response, err
 			}
@@ -772,13 +1126,28 @@ func (engine *SearchEngine) search(ctx context.Context, request SearchRequest, s
 	identityDocumentIDs := map[string]bool{}
 	if !documentRestricted {
 		identityPriority := len(signals.IdentityGroups) > 0 && (!tableIntent || designOnly)
+		boundaryIDs := map[string]bool{}
 		for _, row := range rows {
 			if namedDocumentIdentityScore(row.Title, row.RelativePath, signals.IdentityGroups) > 0 {
 				identityDocumentIDs[row.ID] = true
+				if namedDocumentIdentityAtBoundary(row.Title, row.RelativePath, signals.IdentityGroups) {
+					boundaryIDs[row.ID] = true
+				}
 			}
+		}
+		// “晨星888”同时命中“晨星·守望者888”和“破晨星·裂空888”时，只保留实体名独立出现的文档；
+		// 配表意图下不按身份过滤，但同样排除只在更长名称里命中的文档。
+		if len(boundaryIDs) > 0 {
+			identityIDs := identityDocumentIDs
+			rows = filterCandidateRows(rows, func(row LexicalCandidateRow) bool { return !identityIDs[row.ID] || boundaryIDs[row.ID] })
+			identityDocumentIDs = boundaryIDs
 		}
 		if identityPriority && len(identityDocumentIDs) > 0 {
 			rows = filterCandidateRows(rows, func(row LexicalCandidateRow) bool { return identityDocumentIDs[row.ID] })
+		} else if len(signals.IdentityGroups) > 0 && len(identityDocumentIDs) > 0 {
+			// 配表意图同时检索策划与配表：配表不按活动身份过滤，策划只保留命中该活动身份的文档，
+			// 避免其他同编号活动（如别的 888 活动）因更新而挤掉目标策划。
+			rows = filterCandidateRows(rows, func(row LexicalCandidateRow) bool { return row.SourceKind != "design" || identityDocumentIDs[row.ID] })
 		} else if signals.LatestIntent && !tableIntent && len(signals.DocumentAnchors) > 0 {
 			latestIDs := map[string]bool{}
 			for _, row := range rows {
@@ -852,7 +1221,7 @@ func (engine *SearchEngine) search(ctx context.Context, request SearchRequest, s
 	}
 	byDocument := map[string][]scoredCandidate{}
 	for _, row := range rows {
-		candidate := scoreSearchCandidate(row, normalizedFor(row), normalizedTerms, semanticScores[row.ChunkID])
+		candidate := scoreSearchCandidate(row, normalizedFor(row), concepts, phrases, semanticScores[row.ChunkID])
 		byDocument[row.ID] = append(byDocument[row.ID], candidate)
 	}
 	revision := snapshotRevision
@@ -902,17 +1271,20 @@ func (engine *SearchEngine) search(ctx context.Context, request SearchRequest, s
 	}
 	rankContext := documentRankContext{Query: query, Terms: normalizedTerms, Signals: signals}
 	if !documentRestricted && len(hits) > 0 {
-		bestRelevance := 0.0
+		// 相关度门槛按来源类型分别计算：配表多靠路径和单元格命中，不与中文标题命中的策划案直接比较。
+		bestRelevance := map[string]float64{}
 		for _, hit := range hits {
-			bestRelevance = math.Max(bestRelevance, hit.Relevance)
+			bestRelevance[hit.SourceKind] = math.Max(bestRelevance[hit.SourceKind], hit.Relevance)
 		}
-		qualityFloor := math.Min(bestRelevance, math.Max(0.3, bestRelevance*0.7))
+		qualityFloor := func(kind string) float64 {
+			return math.Min(bestRelevance[kind], math.Max(0.3, bestRelevance[kind]*0.7))
+		}
 		requiredSet := map[string]bool{}
 		for _, id := range requiredExactIDs {
 			requiredSet[id] = true
 		}
 		hits = filterHits(hits, func(hit SearchHit) bool {
-			return requiredSet[hit.DocumentID] || identityDocumentIDs[hit.DocumentID] || documentIdentityRoleScore(hit, rankContext) >= 0.9 || hit.Relevance >= qualityFloor
+			return requiredSet[hit.DocumentID] || identityDocumentIDs[hit.DocumentID] || documentIdentityRoleScore(hit, rankContext) >= 0.9 || hit.Relevance >= qualityFloor(hit.SourceKind)
 		})
 	}
 	engine.sortHits(hits, sortMode, &rankContext)
@@ -1108,7 +1480,8 @@ func (engine *SearchEngine) retrieve(ctx context.Context, request RetrievalReque
 	baseRequest := copySearchRequest(request)
 	var search SearchResponse
 	if len(baseRequest.SourceIDs) == 0 && len(baseRequest.SourceKinds) == 0 {
-		perSourceLimit := max(maxDocuments, baseRequest.Limit)
+		// 每类来源多取候选，按相关度补位时才能看到较早但更相关的文档。
+		perSourceLimit := max(maxDocuments*3, baseRequest.Limit)
 		designRequest, tableRequest := baseRequest, baseRequest
 		designRequest.SourceKinds, designRequest.Limit = []string{"design"}, perSourceLimit
 		tableRequest.SourceKinds, tableRequest.Limit = []string{"table"}, perSourceLimit
@@ -1144,58 +1517,68 @@ func (engine *SearchEngine) retrieve(ctx context.Context, request RetrievalReque
 			}
 		}
 		primaryQuota := (maxDocuments*3 + 3) / 4
+		// 候选列表按日期排列；同分时 SliceStable 保留新者在前。
+		byRelevance := func(hits []SearchHit) []SearchHit {
+			result := append([]SearchHit{}, hits...)
+			sort.SliceStable(result, func(i, j int) bool { return result[i].Relevance > result[j].Relevance })
+			return result
+		}
+		primaryByRelevance, secondaryByRelevance := byRelevance(primary), byRelevance(secondary)
 		selectedPrimary := append([]SearchHit{}, primary[:min(primaryQuota, len(primary))]...)
 		if tableFirst {
-			recentQuota := max(1, (primaryQuota*66+99)/100)
-			selectedMap := map[string]SearchHit{}
-			selectedOrder := []string{}
-			for _, hit := range primary[:min(recentQuota, len(primary))] {
-				selectedMap[hit.DocumentID] = hit
-				selectedOrder = append(selectedOrder, hit.DocumentID)
-			}
-			byRelevance := append([]SearchHit{}, primary...)
-			sort.SliceStable(byRelevance, func(i, j int) bool { return byRelevance[i].Relevance > byRelevance[j].Relevance })
-			for _, hit := range byRelevance {
-				if len(selectedMap) >= primaryQuota {
-					break
-				}
-				if _, ok := selectedMap[hit.DocumentID]; !ok {
-					selectedMap[hit.DocumentID] = hit
-					selectedOrder = append(selectedOrder, hit.DocumentID)
-				}
-			}
-			selectedPrimary = selectedPrimary[:0]
-			for _, id := range selectedOrder {
-				selectedPrimary = append(selectedPrimary, selectedMap[id])
-			}
+			// 配表的更新时间反映任意一行的改动，汇总表（活动总表、模块表）几乎每个版本都会更新，
+			// 按日期挑表会让它们挤掉目录、标题或名称列直接命中的专用表，所以配表按相关度挑选。
+			selectedPrimary = append([]SearchHit{}, primaryByRelevance[:min(primaryQuota, len(primaryByRelevance))]...)
 			engine.sortHits(selectedPrimary, "newest", &rank)
 		}
-		quotaHits := append(append([]SearchHit{}, selectedPrimary...), secondary[:min(max(0, maxDocuments-primaryQuota), len(secondary))]...)
+		// 辅助来源只占少量名额，按相关度挑选，避免被最近更新但只顺带提到关键词的汇总表占满。
+		quotaHits := append(append([]SearchHit{}, selectedPrimary...), secondaryByRelevance[:min(max(0, maxDocuments-primaryQuota), len(secondaryByRelevance))]...)
 		allCandidates := append(append([]SearchHit{}, primary...), secondary...)
+		fillCandidates := append(append([]SearchHit{}, primaryByRelevance...), secondaryByRelevance...)
 		requiredHits := []SearchHit{}
 		if tableFirst && len(signals.IdentityGroups) > 0 {
-			for _, hit := range designSearch.Hits {
-				if matchesIdentitySignals(hit.Title, hit.RelativePath, signals) {
-					requiredHits = append(requiredHits, hit)
-					break
+			// 优先标题命中活动身份的策划，再退到只有目录命中的文档（如同名目录下的剧情稿）。
+			var titleMatch, pathMatch *SearchHit
+			bestTitleScore := 0.0
+			for index := range designSearch.Hits {
+				hit := &designSearch.Hits[index]
+				if score := namedDocumentIdentityScore(hit.Title, "", signals.IdentityGroups); score > bestTitleScore {
+					titleMatch, bestTitleScore = hit, score
 				}
+				if pathMatch == nil && matchesIdentitySignals(hit.Title, hit.RelativePath, signals) {
+					pathMatch = hit
+				}
+			}
+			if titleMatch != nil {
+				requiredHits = append(requiredHits, *titleMatch)
+			} else if pathMatch != nil {
+				requiredHits = append(requiredHits, *pathMatch)
 			}
 		}
 		for _, anchor := range signals.DocumentAnchors {
-			for _, hit := range allCandidates {
-				matched := strings.Contains(hitHaystack(hit), anchor)
-				if restrictIdentity {
-					matched = matchesDocumentIdentity(hit.Title, hit.RelativePath, []string{anchor})
-				}
-				if matched {
-					requiredHits = append(requiredHits, hit)
+			// 显式 ID 优先选标题或路径就是该 ID 的文档，其次才是正文提到它的文档。
+			var chosen *SearchHit
+			for index := range allCandidates {
+				if matchesDocumentIdentity(allCandidates[index].Title, allCandidates[index].RelativePath, []string{anchor}) {
+					chosen = &allCandidates[index]
 					break
 				}
+			}
+			if chosen == nil && !restrictIdentity {
+				for index := range allCandidates {
+					if strings.Contains(hitHaystack(allCandidates[index]), anchor) {
+						chosen = &allCandidates[index]
+						break
+					}
+				}
+			}
+			if chosen != nil {
+				requiredHits = append(requiredHits, *chosen)
 			}
 		}
 		selected := map[string]SearchHit{}
 		order := []string{}
-		for _, hit := range append(requiredHits, append(quotaHits, allCandidates...)...) {
+		for _, hit := range append(requiredHits, append(quotaHits, fillCandidates...)...) {
 			if len(selected) >= maxDocuments {
 				break
 			}

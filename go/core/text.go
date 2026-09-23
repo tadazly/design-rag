@@ -45,10 +45,53 @@ type sectionRule struct {
 	pattern  *regexp.Regexp
 }
 
+// NormalizeText 等价于 NFKC → 删除零宽字符 → TrimSpace → ToLower → 把 `\s+` 折叠为单个空格。
+// 检索时会对大量候选全文调用，因此用单遍扫描代替正则；输出必须与正则实现逐字节一致。
 func NormalizeText(value string) string {
 	value = norm.NFKC.String(value)
-	value = strings.ToLower(strings.TrimSpace(zeroWidthPattern.ReplaceAllString(value, "")))
-	return spacePattern.ReplaceAllString(value, " ")
+	if strings.ContainsAny(value, "\u200B\u200C\u200D\uFEFF") {
+		value = strings.Map(func(r rune) rune {
+			if r >= 0x200B && r <= 0x200D || r == 0xFEFF {
+				return -1
+			}
+			return r
+		}, value)
+	}
+	return collapseRegexpSpace(strings.ToLower(strings.TrimSpace(value)))
+}
+
+// isRegexpSpace 对应 Go regexp 的 `\s`，即 [\t\n\f\r ]。
+func isRegexpSpace(value byte) bool {
+	return value == ' ' || value == '\t' || value == '\n' || value == '\f' || value == '\r'
+}
+
+func collapseRegexpSpace(value string) string {
+	changed := false
+	for index := 0; index < len(value); index++ {
+		if current := value[index]; current != ' ' && isRegexpSpace(current) || current == ' ' && index+1 < len(value) && isRegexpSpace(value[index+1]) {
+			changed = true
+			break
+		}
+	}
+	if !changed {
+		return value
+	}
+	var builder strings.Builder
+	builder.Grow(len(value))
+	inSpace := false
+	for index := 0; index < len(value); index++ {
+		current := value[index]
+		if isRegexpSpace(current) {
+			if !inSpace {
+				builder.WriteByte(' ')
+				inSpace = true
+			}
+			continue
+		}
+		inSpace = false
+		builder.WriteByte(current)
+	}
+	return builder.String()
 }
 
 func HashBytes(value []byte) string {

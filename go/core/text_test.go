@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf16"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 func TestNormalizeChunkDateAndFamily(t *testing.T) {
@@ -94,6 +96,38 @@ func TestBuildSearchTermsKeepsStrongASCIIIdentifiersAndAliases(t *testing.T) {
 	for _, want := range []string{"pool_001_abc", "pool", "001", "abc", "root/file.xlsx", "root", "file.xlsx", "file", "xlsx", "d1:d8", "d1", "d8", "配置"} {
 		if !termSet[want] {
 			t.Fatalf("BuildSearchTerms() omitted %q: %q", want, terms)
+		}
+	}
+}
+
+func regexpNormalizeTextReference(value string) string {
+	value = norm.NFKC.String(value)
+	value = strings.ToLower(strings.TrimSpace(zeroWidthPattern.ReplaceAllString(value, "")))
+	return spacePattern.ReplaceAllString(value, " ")
+}
+
+func TestNormalizeTextMatchesRegexpReference(t *testing.T) {
+	t.Parallel()
+	samples := []string{
+		"", " ", "\t\n", "a", "ＡＢＣ\u200b  奖励\n逻辑", "  前后空白\u3000", "\u3000全角空格\u3000中间\u3000",
+		"行 12 | A=id | B=名字\r\n行 13 | A=2\t|\tB=\f值", "多  个   空格", "零\u200c宽\u200d字\ufeff符", "\u00a0不换行\u00a0空格\u00a0",
+		"İstanbul ǅ Σ ﬁ ① ㈱ ｶﾞ", "\v垂直制表\v", "a \u0085 b", "\xff\xfe无效\x80字节 ", "混合 Mixed\tCASE\nAlphaLottery betaPool",
+		strings.Repeat("配置 ", 2000) + "\n\n" + strings.Repeat("x\t", 500),
+	}
+	alphabet := []rune{' ', '\t', '\n', '\r', '\f', '\v', '\u00a0', '\u3000', '\u200b', '\u200c', '\u200d', '\ufeff', '\u0085', 'A', 'z', 'İ', 'Σ', '配', '表', 'Ａ', '①', 'ﬁ', '|', '='}
+	state := uint32(20260924)
+	for count := 0; count < 3000; count++ {
+		var builder strings.Builder
+		for length := int(state % 40); length > 0; length-- {
+			state = state*1664525 + 1013904223
+			builder.WriteRune(alphabet[int(state>>8)%len(alphabet)])
+		}
+		state = state*1664525 + 1013904223
+		samples = append(samples, builder.String())
+	}
+	for _, sample := range samples {
+		if got, want := NormalizeText(sample), regexpNormalizeTextReference(sample); got != want {
+			t.Fatalf("NormalizeText(%q) = %q, want %q", sample, got, want)
 		}
 	}
 }
