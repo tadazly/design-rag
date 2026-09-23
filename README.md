@@ -23,6 +23,34 @@ DRAG 是面向游戏策划案、配置表和历史版本的本地知识库。它
 
 新增来源会自动执行增量索引。来源目录必须是绝对路径，不能使用相同目录或互为父子目录。明确要求“更新仓库并更新索引”时，Codex 不会重复口头确认，但仍会遵守必要的工具 approval。
 
+## 快速开始：Claude Code Plugin
+
+同一个 Plugin 同时提供 Claude Code 版本，Skill、MCP 工具与 CLI 和 Codex 版一致，两边共用同一份来源配置和本地索引。
+
+1. 从 [GitHub Releases](https://github.com/tadazly/design-rag/releases) 下载对应平台的 `design-rag-local-<版本>-<平台>.zip`，解压到固定目录。Claude Code 直接从该目录加载 Plugin，移动或删除目录后需要重新添加。
+2. 添加本地 marketplace 并安装，然后新开 Claude Code 会话：
+
+   ```bash
+   claude plugin marketplace add <解压后的 design-rag-local 目录>
+   claude plugin install design-rag@design-rag-local
+   ```
+
+3. 与 Codex 一样直接描述问题或维护要求，例如上面的示例。
+
+Claude Code 默认会在首次调用 Skill 和每个检索工具时请求确认。只读检索需要长期免确认时，在 `/permissions` 或 settings 的 `permissions.allow` 中加入以下规则；来源、索引和缓存管理工具保持逐次确认：
+
+```json
+[
+  "Skill(design-rag:game-design-rag)",
+  "mcp__plugin_design-rag_design-rag__drag_search",
+  "mcp__plugin_design-rag_design-rag__drag_retrieve",
+  "mcp__plugin_design-rag_design-rag__drag_read_citation",
+  "mcp__plugin_design-rag_design-rag__drag_list_versions",
+  "mcp__plugin_design-rag_design-rag__drag_sources",
+  "mcp__plugin_design-rag_design-rag__drag_index_status"
+]
+```
+
 ## 主要功能
 
 - 检索策划案、配置表和历史版本。
@@ -64,7 +92,7 @@ npm run check
 npm start
 ```
 
-验证或构建 Codex Plugin：
+验证或构建 Codex / Claude Code Plugin：
 
 ```powershell
 npm run plugin:validate

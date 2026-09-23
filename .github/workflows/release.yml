@@ -250,8 +250,8 @@ jobs:
             "",
             "- Source SHA: `\(.sourceSha)`",
             "- Tag commit: `\(.tagCommit)`",
-            "- Windows Plugin runtime / MCP: \(.windowsPlugin.runtimeExecution) / \(.windowsRuntime.mcpHandshake)",
-            "- macOS Plugin runtime / MCP: \(.macosPlugin.runtimeExecution) / \(.macosRuntime.mcpHandshake)",
+            "- Windows Plugin runtime / Codex MCP / Claude Code MCP: \(.windowsPlugin.runtimeExecution) / \(.windowsRuntime.mcpHandshake) / \(.windowsRuntime.claudeMcpHandshake)",
+            "- macOS Plugin runtime / Codex MCP / Claude Code MCP: \(.macosPlugin.runtimeExecution) / \(.macosRuntime.mcpHandshake) / \(.macosRuntime.claudeMcpHandshake)",
             "- Windows signing: \(.signing.windows)",
             "- macOS signing / notarization: \(.signing.macos) / \(.signing.notarized)"
           ] | .[]' release-audit/release-evidence.json >> "$GITHUB_STEP_SUMMARY"

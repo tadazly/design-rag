@@ -2,7 +2,7 @@
 
 ## 目标与边界
 
-产品分为两条运行链：单一纯 Go binary 驱动的 CLI/MCP/Codex Plugin，以及 TypeScript/Electron/React 桌面客户端。Plugin 技术 ID 为 `design-rag`、显示名为 `DRAG 游戏策划知识库`，Go CLI 名为 `drag`，桌面可执行文件名为 `drag-gui`。
+产品分为两条运行链：单一纯 Go binary 驱动的 CLI/MCP/Codex 与 Claude Code Plugin，以及 TypeScript/Electron/React 桌面客户端。Plugin 技术 ID 为 `design-rag`、显示名为 `DRAG 游戏策划知识库`，Go CLI 名为 `drag`，桌面可执行文件名为 `drag-gui`。
 
 `src/core` 是桌面客户端的 TypeScript compatibility core，不依赖 LLM、网络或 Electron；Plugin 的独立 CLI/MCP 则由 `go/core` 与 `go/cmd/drag` 提供。两条路径都把 SQLite 视为可重建缓存，策划案和配置表源文件始终只读。
 
@@ -15,17 +15,17 @@ Search / Retrieve / Citation / Versions
         ↙                         ↘
 Go drag CLI / MCP              TypeScript desktop core
         ↓                         ↓
-Codex Plugin                  Electron main → Codex app-server
+Codex / Claude Code Plugin    Electron main → Codex app-server
 ```
 
-Plugin 不包含 Electron，也不自行嵌入桌面 app-server。Codex 是 Plugin 的 host，直接启动随包 `drag` Go binary 的 MCP 模式；Plugin 的 CLI、MCP、配置、索引与检索路径都不需要 Node。桌面客户端仍由 Electron main 管理 Codex app-server、多 thread、证据栏和源文件打开，并可继续复用 `drag-core` JSONL indexing 接口。
+Plugin 不包含 Electron，也不自行嵌入桌面 app-server。Codex 与 Claude Code 是 Plugin 的 host，直接启动随包 `drag` Go binary 的 MCP 模式；Plugin 的 CLI、MCP、配置、索引与检索路径都不需要 Node。两个 host 使用同一个 binary、Skill 与状态目录，因此来源配置和索引在两边共享，并由同一 mutation lease 串行化。桌面客户端仍由 Electron main 管理 Codex app-server、多 thread、证据栏和源文件打开，并可继续复用 `drag-core` JSONL indexing 接口。
 
 ## 数据与信任边界
 
 - 源文件永远只读。索引、设置和会话元数据只写入 drag 的应用数据目录。
-- Windows 新安装默认使用 `%APPDATA%\design-rag` 和 `%LOCALAPPDATA%\design-rag`。
-- macOS 新安装默认使用 `~/Library/Application Support/design-rag/config` 和 `~/Library/Application Support/design-rag/data`。
-- 新配置和数据目录使用 `DesignRag`；若当前目录不存在而上一版 `design-rag` 目录存在，继续读取上一版目录。
+- Windows 新安装默认使用 `%APPDATA%\DesignRag` 和 `%LOCALAPPDATA%\DesignRag`。
+- macOS 新安装默认使用 `~/Library/Application Support/DesignRag/config` 和 `~/Library/Application Support/DesignRag/data`。
+- 若 `DesignRag` 目录不存在而上一版 `design-rag` 目录存在，继续读取上一版目录。
 - `DESIGN_RAG_CONFIG_DIR` / `DESIGN_RAG_DATA_DIR` 可覆盖默认位置。
 - 首次启动不预填任何资料目录；用户通过 GUI、CLI 或 MCP 添加本机来源。
 - 索引在本机完成。用户发起 AI 对话时，受字符预算限制的命中片段才会发送给 ChatGPT 服务。
@@ -163,31 +163,39 @@ MCP stdio 当前暴露 3 个只读 Markdown resources，启动说明要求 agent
 - `drag_index_resume`
 - `drag_cache_clear`
 
-`drag_source_remove` 和 `drag_cache_clear` 带 destructive annotation；其他管理工具带 mutating/idempotent annotation。Plugin 的 `.mcp.json` 对管理工具设置 prompt approval。MCP stdout 只写协议消息，诊断和进度写 stderr。
+`drag_source_remove` 和 `drag_cache_clear` 带 destructive annotation；其他管理工具带 mutating/idempotent annotation。Codex 的 `.codex-mcp.json` 对只读工具自动 approve、对管理工具设置 prompt approval；Claude Code 没有插件级 approval 配置，Skill 用 `allowed-tools` 在调用它的那一轮预授权 6 个只读工具，长期免确认由用户添加 permission 规则，管理工具始终逐次确认。MCP stdout 只写协议消息，诊断和进度写 stderr。
+
+`drag_search`、`drag_retrieve`、`drag_read_citation` 与 `drag_list_versions` 在 `tools/list` 中声明 `_meta["anthropic/maxResultSizeChars"]=150000`。Claude Code 默认把超过 `MAX_MCP_OUTPUT_TOKENS`（25,000 token）的结果转存为文件，而 Skill 常规预算下的证据结果约 70k–110k 字符；声明后常规结果留在对话中，广泛盘点仍会超限转存。其他 host 忽略该字段。
 
 来源添加/修改和索引更新可以作为 MCP 后台任务立即返回；controller 尚未建立时收到的 pause intent 会在建立后应用，活动索引期间拒绝冲突 mutation，`drag_index_status` 用于读取真实进度。查询、引用、来源和状态工具调用前后都会检查磁盘配置变化，跨进程停用来源时会重试或拒绝旧证据。
 
-Plugin cache 按版本安装。发布新版本时提升 manifest/package 版本后执行 `codex plugin add`；安装后必须启动新的 Codex host 进程或重启 Desktop 才能证明新 Skill/MCP 已加载，在同一已运行 Desktop host 中仅新建任务不构成刷新。不要杀死活跃 MCP 进程来覆盖同版本缓存，否则正在运行的任务会收到 `Transport closed`。
+Plugin cache 按版本安装。发布新版本时提升 manifest/package 版本后执行 `codex plugin add`；安装后必须启动新的 Codex host 进程或重启 Desktop 才能证明新 Skill/MCP 已加载，在同一已运行 Desktop host 中仅新建任务不构成刷新。不要杀死活跃 MCP 进程来覆盖同版本缓存，否则正在运行的任务会收到 `Transport closed`。Claude Code 的 MCP server 同样只在新会话启动时加载，`/reload-plugins` 不会重连插件 MCP。
 
 宽范围查询的协议上限为：`drag_search.limit ≤ 100`，`drag_retrieve.maxDocuments ≤ 50`，每份文档最多 10 个 chunk，证据字符预算最多 60,000。超过范围时应按日期窗口、玩法或活动类型分批检索，避免一次返回无限候选。
 
-## Codex Plugin
+## Codex 与 Claude Code Plugin
 
-Plugin 技术 ID 为 `design-rag`，用户界面显示名为 `DRAG 游戏策划知识库`。Plugin 源位于 `plugins/design-rag`：
+Plugin 技术 ID 为 `design-rag`，用户界面显示名为 `DRAG 游戏策划知识库`。同一个 Plugin 目录同时是 Codex 与 Claude Code Plugin，源位于 `plugins/design-rag`：
 
 ```text
 plugins/design-rag/
-├── .codex-plugin/plugin.json
-├── .mcp.json
-├── skills/game-design-rag/
+├── .codex-plugin/plugin.json    # Codex manifest，mcpServers 指向 ./.codex-mcp.json
+├── .codex-mcp.json              # Codex MCP：./bin/drag mcp，cwd=.
+├── .claude-plugin/plugin.json   # Claude Code manifest，内联 MCP：${CLAUDE_PLUGIN_ROOT}/bin/drag mcp
+├── skills/game-design-rag/      # 两个 host 共用
 │   ├── SKILL.md
+│   ├── agents/openai.yaml       # 仅 Codex 读取
 │   └── references/
 └── THIRD_PARTY_NOTICES.md
 ```
 
-源码 checkout 不在 `.agents/plugins/marketplace.json` 自注册，因为 `main` 不携带目标平台 binary，不能直接作为 Desktop 安装包启动。marketplace 模板保存在 `packaging/design-rag-marketplace.json`；Go 构建器只在完整 stage 中生成 `.agents/plugins/marketplace.json`，并将 MCP command 改写为目标平台 Go binary。
+两个 host 的 MCP 启动配置刻意互不可见。Codex 只读取 manifest 声明的 `.codex-mcp.json`；Claude Code 会自动加载插件根目录的 `.mcp.json`，且不支持 `cwd`、按用户项目目录解析相对 command，因此插件根目录禁止出现 `.mcp.json`，Claude 配置内联在 `.claude-plugin/plugin.json` 并用 `${CLAUDE_PLUGIN_ROOT}` 定位 binary。`plugin-pack validate`、stage、archive 与 tag 校验都会拒绝根目录 `.mcp.json`。Claude command 在所有目标上都是无扩展名的 `${CLAUDE_PLUGIN_ROOT}/bin/drag`：macOS 直接执行 `drag`，Windows 在 `drag` 与 `drag.exe` 并存的 tag 树中仍解析到 `drag.exe`。
 
-正式发布由 GitHub Actions 在 Windows x64 与 Apple Silicon macOS 原生 runner 分别完成 stage、CLI/MCP smoke 和 archive。两个平台都通过后，workflow 以已验证的 `origin/main` 源码提交为父提交构造独立发布树，只在该树的 `plugins/design-rag/bin` 中加入 `drag.exe` 与 `drag`，再创建不可变 `vX.Y.Z` tag；该分发提交不合并回 `main`。GitHub Release 只发布两平台 Codex Plugin 本地安装包、Windows GUI、macOS DMG 和 `SHA256SUMS.txt`；Release Notes 解释每个文件用途并显示签名/公证状态。stage、runtime 和汇总 evidence 保存为 90 天 Actions 审计产物，不与用户下载项混列。Release 验收成功后，上游使用仅授权 `s-plugins` 的 Secret 发送 `plugin-released` repository dispatch；接收端幂等更新 `git-subdir` ref 并自行校验、提交 `main`，订阅者随后可直接启动 tag 树中的对应平台 binary。
+Claude Code 中 MCP 工具名为 `mcp__plugin_design-rag_design-rag__<tool>`，server 注册名为 `plugin:design-rag:design-rag`，Skill 为 `design-rag:game-design-rag`。Skill 的 `allowed-tools` 只列 6 个只读工具，构建器会校验它与 Codex 的只读自动 approve 清单一致，防止预授权管理工具。
+
+源码 checkout 不在 `.agents/plugins/marketplace.json` 或 `.claude-plugin/marketplace.json` 自注册，因为 `main` 不携带目标平台 binary，不能直接作为安装包启动。marketplace 模板保存在 `packaging/design-rag-marketplace.json`（Codex）与 `packaging/design-rag-claude-marketplace.json`（Claude Code）；Go 构建器只在完整 stage 中生成 `.agents/plugins/marketplace.json` 与 `.claude-plugin/marketplace.json`，并将 Codex MCP command 改写为目标平台 Go binary。
+
+正式发布由 GitHub Actions 在 Windows x64 与 Apple Silicon macOS 原生 runner 分别完成 stage、CLI/MCP smoke 和 archive。两个平台都通过后，workflow 以已验证的 `origin/main` 源码提交为父提交构造独立发布树，只在该树的 `plugins/design-rag/bin` 中加入 `drag.exe` 与 `drag`，再创建不可变 `vX.Y.Z` tag；该分发提交不合并回 `main`。GitHub Release 只发布两平台 Codex / Claude Code Plugin 本地安装包（解压后同时是两个 host 的本地 marketplace）、Windows GUI、macOS DMG 和 `SHA256SUMS.txt`；Release Notes 解释每个文件用途并显示签名/公证状态。stage、runtime 和汇总 evidence 保存为 90 天 Actions 审计产物，不与用户下载项混列。Release 验收成功后，上游使用仅授权 `s-plugins` 的 Secret 发送 `plugin-released` repository dispatch；接收端幂等更新 `git-subdir` ref，并从同一条目生成 Claude Code marketplace，自行校验后提交 `main`；两个宿主的订阅者随后都可直接启动 tag 树中的对应平台 binary。
 
 Skill 覆盖模糊查找策划、玩法/流程/产出分析、相关配表、历史版本和活动复用，并在首次使用时通过管理工具配置来源和索引。
 
@@ -195,7 +203,7 @@ Skill 覆盖模糊查找策划、玩法/流程/产出分析、相关配表、历
 
 正式分发版本必须是与项目基础版本一致的严格 `x.y.z`，源码校验、stage 校验和 ZIP 回读校验都会拒绝 `+codex.*` 或其他 build metadata。`+codex.<cachebuster>` 只允许用于开发者本机对同一基础版本执行缓存刷新，不得写入正式 stage、archive 或用户安装源。
 
-Go runtime 可从 Windows 交叉构建并核验 `darwin-arm64` Mach-O；最终 Plugin archive 仍强制目标原生 runner：Windows x64 构建 `win32-x64`，Apple Silicon Mac 构建 `darwin-arm64`。Windows 隔离 `design-rag-go-test` stage 执行 CLI 与真实 MCP stdio smoke；正式 stage 恢复原身份并复用相同 binary，但为避免撞到已安装的同名 MCP 不在本机启动。macOS codesign、notarization、Gatekeeper 和 Apple Silicon 实机运行仍属于独立发布门禁。
+Go runtime 可从 Windows 交叉构建并核验 `darwin-arm64` Mach-O；最终 Plugin archive 仍强制目标原生 runner：Windows x64 构建 `win32-x64`，Apple Silicon Mac 构建 `darwin-arm64`。Windows 隔离 `design-rag-go-test` stage 执行 CLI 与真实 MCP stdio smoke，Codex 配置按插件根目录启动，Claude 配置替换 `${CLAUDE_PLUGIN_ROOT}` 后从插件外的临时目录启动，两套配置都完成 3 resources 与 13 tools 验收；正式 stage 恢复原身份并复用相同 binary，但为避免撞到已安装的同名 MCP 不在本机启动。macOS codesign、notarization、Gatekeeper 和 Apple Silicon 实机运行仍属于独立发布门禁。
 
 ## Electron 与 Codex app-server
 
@@ -227,7 +235,7 @@ Electron main 启动当前用户安装的 `codex app-server --listen stdio://`�
 3. SQLite：有界 startup probe、完整 integrity gate、增量无变化不重写、last-good、missing reconciliation、缓存恢复。
 4. Retrieval eval：轮盘抽奖、流程、配置、历史改动和 newest-first。
 5. MCP：3 个 resources、13 个工具、参数上限、annotations、来源生命周期；源码 Go runtime 与隔离 `go-test` stage 执行真实 stdio 全工具调用及并发回归，正式同名 stage 不在已安装 Plugin 的宿主上启动。
-6. Plugin：官方 manifest/Skill validator、目标平台原生分发包、安装、独立 Codex 会话 MCP 回归。
+6. Plugin：官方 manifest/Skill validator（含 `claude plugin validate --strict`）、目标平台原生分发包、安装、独立 Codex 与 Claude Code 会话 MCP 回归。
 7. app-server：真实 initialize/account/model/thread smoke。
 8. GUI：浏览器视觉检查后，在真实 `drag-gui` 验证 renderer/preload/IPC、目录拖入、配置持久化、增量与 watcher；Explorer 物理手势单独报告。
 9. 发布：Windows/macOS 分别完成原生构建、签名策略、hash 和目标机验收。

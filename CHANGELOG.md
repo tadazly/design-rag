@@ -4,6 +4,20 @@
 
 ## [Unreleased]
 
+### 新增
+
+- 新增 Claude Code Plugin：同一个 Plugin 同时支持 Codex 与 Claude Code，共用 Skill、MCP 工具、CLI、来源配置与本地索引。Release 中的 Plugin ZIP 解压后同时是两个宿主的本地 marketplace。
+- 检索、证据包、引用回读和版本列表工具声明单次结果上限，Claude Code 中常规检索结果不再被转存为文件。
+
+### 变更
+
+- Codex Plugin 的 MCP 配置文件改名为 `.codex-mcp.json`；插件根目录不再包含 `.mcp.json`，避免 Claude Code 按用户项目目录启动错误的程序。
+- Skill 改为宿主中立，分别说明 Codex 与 Claude Code 的 MCP 名称，并更正 citationId 格式说明。
+
+### 升级提示
+
+- Codex 用户更新 Plugin 后需重启 Codex 或新建任务；Claude Code 用户安装或更新后需新开会话才会加载 MCP server。
+
 ## [0.3.3] - 2026-09-04
 
 ### 修复

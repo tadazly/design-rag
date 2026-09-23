@@ -19,12 +19,29 @@ function capture(command, args) {
 }
 
 const manifest = JSON.parse(await readFile(path.join(pluginRoot, ".codex-plugin/plugin.json"), "utf8"));
-const mcp = JSON.parse(await readFile(path.join(pluginRoot, ".mcp.json"), "utf8"));
+const mcp = JSON.parse(await readFile(path.join(pluginRoot, ".codex-mcp.json"), "utf8"));
 const server = mcp.mcpServers?.["design-rag"];
 assert(/^\d+\.\d+\.\d+$/.test(expectedVersion), `目标版本必须为严格 x.y.z：${expectedVersion}`);
 assert(manifest.version === expectedVersion, `Plugin manifest 版本不一致：${manifest.version} != ${expectedVersion}`);
 assert(manifest.interface?.websiteURL === expectedWebsite, "tag Plugin websiteURL 与公开网站不一致");
+assert(manifest.mcpServers === "./.codex-mcp.json", "tag Codex manifest 必须引用 ./.codex-mcp.json");
 assert(server?.command === "./bin/drag" && server?.cwd === "." && JSON.stringify(server?.args) === '["mcp"]', "tag Plugin 必须使用跨平台 ./bin/drag mcp");
+
+// Claude Code 会自动加载根目录 .mcp.json，且按用户项目目录解析相对 command。
+const claudeManifest = JSON.parse(await readFile(path.join(pluginRoot, ".claude-plugin/plugin.json"), "utf8"));
+const claudeServers = claudeManifest.mcpServers ?? {};
+const claudeServer = claudeServers["design-rag"];
+// Claude marketplace 以条目 version 决定缓存目录和是否更新，两份 manifest 必须同名同版本。
+assert(manifest.name === "design-rag" && claudeManifest.name === "design-rag", "tag Codex 与 Claude manifest name 必须都是 design-rag");
+assert(claudeManifest.version === manifest.version, `Claude 与 Codex manifest 版本不一致：${claudeManifest.version} != ${manifest.version}`);
+assert(claudeManifest.version === expectedVersion, `Claude manifest 版本不一致：${claudeManifest.version} != ${expectedVersion}`);
+assert(claudeManifest.homepage === expectedWebsite, "tag Claude manifest homepage 与公开网站不一致");
+assert(Object.keys(claudeServers).length === 1 && claudeServer?.command === "${CLAUDE_PLUGIN_ROOT}/bin/drag" && JSON.stringify(claudeServer?.args) === '["mcp"]', "tag Claude Plugin 必须使用跨平台 ${CLAUDE_PLUGIN_ROOT}/bin/drag mcp");
+assert(claudeServer.env === undefined && claudeServer.cwd === undefined, "tag Claude MCP 不得内置 env 或 cwd");
+await stat(path.join(pluginRoot, ".mcp.json")).then(
+  () => { throw new Error("tag Plugin 不得包含 Claude Code 会自动加载的根目录 .mcp.json"); },
+  (error) => { if (error.code !== "ENOENT") throw error; },
+);
 
 for (const legalFile of ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"]) {
   assert((await stat(path.join(pluginRoot, legalFile))).isFile(), `tag Plugin 缺少 ${legalFile}`);

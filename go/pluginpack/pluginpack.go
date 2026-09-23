@@ -29,19 +29,33 @@ const (
 	ProductionPluginName = "design-rag"
 	TestPluginName       = "design-rag-go-test"
 	productionWebsite    = "https://github.com/tadazly/design-rag"
+	productionRepository = "https://github.com/tadazly/design-rag.git"
 	ownerMarkerFile      = ".design-rag-pluginpack-owned.json"
+	// Codex 只读取 manifest 声明的 MCP 配置；Claude Code 会额外自动加载插件根目录的
+	// .mcp.json，并把其中的相对 command 按用户项目目录解析。因此 Codex 配置使用专用文件名，
+	// Claude 配置内联在 .claude-plugin/plugin.json，两个宿主互不读取对方的启动方式。
+	codexMCPConfigFile          = ".codex-mcp.json"
+	claudeDefaultMCPConfigFile  = ".mcp.json"
+	claudePluginRootPlaceholder = "${CLAUDE_PLUGIN_ROOT}"
+	claudeMCPCommand            = claudePluginRootPlaceholder + "/bin/drag"
 )
 
 var pluginSourceFiles = []string{
-	".mcp.json",
+	".claude-plugin/plugin.json",
+	".codex-mcp.json",
+	".codex-plugin/plugin.json",
 	"STAGING.md",
 	"THIRD_PARTY_NOTICES.md",
-	".codex-plugin/plugin.json",
 	"skills/game-design-rag/SKILL.md",
 	"skills/game-design-rag/agents/openai.yaml",
 	"skills/game-design-rag/references/administration.md",
 	"skills/game-design-rag/references/analysis-workflows.md",
 }
+
+var (
+	readOnlyToolNames = []string{"drag_search", "drag_retrieve", "drag_read_citation", "drag_list_versions", "drag_sources", "drag_index_status"}
+	mutatingToolNames = []string{"drag_source_add", "drag_source_update", "drag_source_remove", "drag_index_update", "drag_index_pause", "drag_index_resume", "drag_cache_clear"}
+)
 
 var distributionVersionPattern = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
 
@@ -90,6 +104,8 @@ type Evidence struct {
 	RuntimeReason            string         `json:"runtimeReason,omitempty"`
 	MCPHandshake             string         `json:"mcpHandshake"`
 	MCPReason                string         `json:"mcpReason,omitempty"`
+	ClaudeMCPHandshake       string         `json:"claudeMcpHandshake"`
+	ClaudeMCPReason          string         `json:"claudeMcpReason,omitempty"`
 	LicenseFileCount         int            `json:"licenseFileCount"`
 	SourceManifestSHA256     string         `json:"sourceManifestSha256"`
 	DependencyManifestSHA256 string         `json:"dependencyManifestSha256"`
@@ -107,13 +123,16 @@ type Archive struct {
 }
 
 type StaticEvidence struct {
-	Status          string `json:"status"`
-	PluginName      string `json:"pluginName"`
-	Version         string `json:"version"`
-	DisplayName     string `json:"displayName"`
-	MarketplaceName string `json:"marketplaceName"`
-	MCPCommand      string `json:"mcpCommand"`
-	MCPArgs         []any  `json:"mcpArgs"`
+	Status                string `json:"status"`
+	PluginName            string `json:"pluginName"`
+	Version               string `json:"version"`
+	DisplayName           string `json:"displayName"`
+	MarketplaceName       string `json:"marketplaceName"`
+	MCPCommand            string `json:"mcpCommand"`
+	MCPArgs               []any  `json:"mcpArgs"`
+	ClaudeMarketplaceName string `json:"claudeMarketplaceName"`
+	ClaudeMCPCommand      string `json:"claudeMcpCommand"`
+	ClaudeMCPArgs         []any  `json:"claudeMcpArgs"`
 }
 
 func targetFor(value string) (Target, error) {
@@ -185,11 +204,22 @@ func ValidateSource(projectRoot string) (StaticEvidence, error) {
 	if err != nil {
 		return StaticEvidence{}, err
 	}
-	mcpConfig, err := readJSONObject(filepath.Join(pluginRoot, ".mcp.json"))
+	if err := rejectClaudeDefaultMCPConfig(pluginRoot); err != nil {
+		return StaticEvidence{}, err
+	}
+	mcpConfig, err := readJSONObject(filepath.Join(pluginRoot, codexMCPConfigFile))
 	if err != nil {
 		return StaticEvidence{}, err
 	}
 	marketplace, err := readJSONObject(filepath.Join(projectRoot, "packaging", "design-rag-marketplace.json"))
+	if err != nil {
+		return StaticEvidence{}, err
+	}
+	claudeManifest, err := readJSONObject(filepath.Join(pluginRoot, ".claude-plugin", "plugin.json"))
+	if err != nil {
+		return StaticEvidence{}, err
+	}
+	claudeMarketplace, err := readJSONObject(filepath.Join(projectRoot, "packaging", "design-rag-claude-marketplace.json"))
 	if err != nil {
 		return StaticEvidence{}, err
 	}
@@ -209,8 +239,8 @@ func ValidateSource(projectRoot string) (StaticEvidence, error) {
 	if err := validateDistributionVersion(version, stringValue(rootPackage, "version")); err != nil {
 		return StaticEvidence{}, err
 	}
-	if stringValue(manifest, "mcpServers") != "./.mcp.json" || stringValue(manifest, "skills") != "./skills/" {
-		return StaticEvidence{}, errors.New("manifest 必须引用 ./.mcp.json 与 ./skills/")
+	if stringValue(manifest, "mcpServers") != "./"+codexMCPConfigFile || stringValue(manifest, "skills") != "./skills/" {
+		return StaticEvidence{}, fmt.Errorf("Codex manifest 必须引用 ./%s 与 ./skills/", codexMCPConfigFile)
 	}
 	interfaceObject, err := nestedObject(manifest, "interface")
 	if err != nil || stringValue(interfaceObject, "displayName") != "DRAG 游戏策划知识库" {
@@ -221,15 +251,15 @@ func ValidateSource(projectRoot string) (StaticEvidence, error) {
 	}
 	servers, err := nestedObject(mcpConfig, "mcpServers")
 	if err != nil || len(servers) != 1 {
-		return StaticEvidence{}, errors.New(".mcp.json 必须且只能声明一个 MCP server")
+		return StaticEvidence{}, fmt.Errorf("%s 必须且只能声明一个 MCP server", codexMCPConfigFile)
 	}
 	server, ok := servers[ProductionPluginName].(map[string]any)
 	if !ok {
-		return StaticEvidence{}, errors.New(".mcp.json 缺少 design-rag server")
+		return StaticEvidence{}, fmt.Errorf("%s 缺少 design-rag server", codexMCPConfigFile)
 	}
 	args, ok := server["args"].([]any)
 	if !ok || len(args) != 1 || args[0] != "mcp" || stringValue(server, "command") != "./bin/drag" || stringValue(server, "cwd") != "." {
-		return StaticEvidence{}, errors.New("源码 MCP 必须由 ./bin/drag mcp 启动，cwd 必须为 .")
+		return StaticEvidence{}, errors.New("源码 Codex MCP 必须由 ./bin/drag mcp 启动，cwd 必须为 .")
 	}
 	if _, exists := server["env"]; exists {
 		return StaticEvidence{}, errors.New("正式源码 MCP 不得内置测试环境变量")
@@ -238,18 +268,35 @@ func ValidateSource(projectRoot string) (StaticEvidence, error) {
 		return StaticEvidence{}, errors.New("MCP 必须启用且默认只读工具自动 approve")
 	}
 	toolApprovals, ok := server["tools"].(map[string]any)
-	mutatingTools := []string{"drag_source_add", "drag_source_update", "drag_source_remove", "drag_index_update", "drag_index_pause", "drag_index_resume", "drag_cache_clear"}
-	if !ok || len(toolApprovals) != len(mutatingTools) {
+	if !ok || len(toolApprovals) != len(mutatingToolNames) {
 		return StaticEvidence{}, errors.New("MCP 管理工具 approval 清单不完整")
 	}
-	for _, toolName := range mutatingTools {
+	for _, toolName := range mutatingToolNames {
 		approval, _ := toolApprovals[toolName].(map[string]any)
 		if stringValue(approval, "approval_mode") != "prompt" {
 			return StaticEvidence{}, fmt.Errorf("MCP 管理工具必须 prompt approval：%s", toolName)
 		}
 	}
-	if bytes.Contains(mustRead(filepath.Join(pluginRoot, "skills", "game-design-rag", "SKILL.md")), []byte("go-test")) {
+	skillText := mustRead(filepath.Join(pluginRoot, "skills", "game-design-rag", "SKILL.md"))
+	if bytes.Contains(skillText, []byte("go-test")) {
 		return StaticEvidence{}, errors.New("正式 Skill 不得残留 go-test 标记")
+	}
+	if err := validateSkillAllowedTools(string(skillText), ProductionPluginName); err != nil {
+		return StaticEvidence{}, err
+	}
+	if err := validateClaudeManifest(claudeManifest, ProductionPluginName, stringValue(interfaceObject, "displayName"), "game-design-rag", version, false); err != nil {
+		return StaticEvidence{}, err
+	}
+	if stringValue(claudeManifest, "description") != stringValue(manifest, "description") {
+		return StaticEvidence{}, errors.New("Claude 与 Codex manifest 的 description 必须一致")
+	}
+	if err := validateClaudeMarketplace(claudeMarketplace, ProductionPluginName+"-local", ProductionPluginName, stringValue(interfaceObject, "displayName"), false); err != nil {
+		return StaticEvidence{}, err
+	}
+	claudePlugins, _ := claudeMarketplace["plugins"].([]any)
+	claudeEntry, _ := claudePlugins[0].(map[string]any)
+	if stringValue(claudeEntry, "description") != stringValue(manifest, "description") {
+		return StaticEvidence{}, errors.New("Claude marketplace 条目 description 必须与 manifest 一致")
 	}
 	plugins, ok := marketplace["plugins"].([]any)
 	if !ok || len(plugins) != 1 {
@@ -276,12 +323,137 @@ func ValidateSource(projectRoot string) (StaticEvidence, error) {
 	} else if count > 0 {
 		return StaticEvidence{}, fmt.Errorf("Plugin 源仍含 Node/JavaScript runtime 产物：%s", strings.Join(files, ", "))
 	}
-	return StaticEvidence{Status: "PASS", PluginName: ProductionPluginName, Version: version, DisplayName: stringValue(interfaceObject, "displayName"), MarketplaceName: stringValue(marketplace, "name"), MCPCommand: stringValue(server, "command"), MCPArgs: args}, nil
+	claudeServer := claudeManifest["mcpServers"].(map[string]any)[ProductionPluginName].(map[string]any)
+	return StaticEvidence{Status: "PASS", PluginName: ProductionPluginName, Version: version, DisplayName: stringValue(interfaceObject, "displayName"), MarketplaceName: stringValue(marketplace, "name"), MCPCommand: stringValue(server, "command"), MCPArgs: args, ClaudeMarketplaceName: stringValue(claudeMarketplace, "name"), ClaudeMCPCommand: stringValue(claudeServer, "command"), ClaudeMCPArgs: claudeServer["args"].([]any)}, nil
 }
 
 func mustRead(path string) []byte {
 	raw, _ := os.ReadFile(path)
 	return raw
+}
+
+func rejectClaudeDefaultMCPConfig(pluginRoot string) error {
+	if _, err := os.Lstat(filepath.Join(pluginRoot, claudeDefaultMCPConfigFile)); err == nil {
+		return fmt.Errorf("Plugin 根目录不得包含 %s：Claude Code 会自动加载它，并按用户项目目录解析相对 command；Codex 配置请使用 %s", claudeDefaultMCPConfigFile, codexMCPConfigFile)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+// goTestEnvironment isolates MCP identity, resources, Skill and state for the
+// go-test stage. pluginRoot is "." for Codex (cwd is the plugin root) and the
+// ${CLAUDE_PLUGIN_ROOT} placeholder for Claude Code (cwd is the user project).
+func goTestEnvironment(pluginName, skillName, pluginRoot string) map[string]any {
+	return map[string]any{
+		"DESIGN_RAG_MCP_NAME":        pluginName,
+		"DESIGN_RAG_RESOURCE_SCHEME": pluginName,
+		"DESIGN_RAG_SKILL_NAME":      skillName,
+		"DESIGN_RAG_PLUGIN_ROOT":     pluginRoot,
+		"DESIGN_RAG_STATE_NAMESPACE": pluginName,
+	}
+}
+
+func validateClaudeManifest(manifest map[string]any, pluginName, displayName, skillName, expectedVersion string, testMarker bool) error {
+	if stringValue(manifest, "name") != pluginName {
+		return fmt.Errorf("Claude manifest name 必须为 %s", pluginName)
+	}
+	if err := validateDistributionVersion(stringValue(manifest, "version"), expectedVersion); err != nil {
+		return fmt.Errorf("Claude manifest 版本无效: %w", err)
+	}
+	if stringValue(manifest, "displayName") != displayName {
+		return fmt.Errorf("Claude manifest displayName 必须为 %s", displayName)
+	}
+	author, _ := manifest["author"].(map[string]any)
+	if stringValue(author, "name") != "tadazly" || stringValue(manifest, "homepage") != productionWebsite || stringValue(manifest, "repository") != productionRepository || stringValue(manifest, "license") != "Apache-2.0" {
+		return errors.New("Claude manifest author、homepage、repository 或 license 与公开项目不一致")
+	}
+	for _, key := range []string{"skills", "commands", "agents", "hooks", "outputStyles", "lspServers"} {
+		if _, exists := manifest[key]; exists {
+			return fmt.Errorf("Claude manifest 不得声明 %s：Skill 由默认 skills/ 目录加载", key)
+		}
+	}
+	servers, ok := manifest["mcpServers"].(map[string]any)
+	if !ok {
+		return errors.New("Claude manifest 必须内联 mcpServers，不得引用 Codex 或根目录 MCP 配置文件")
+	}
+	server, ok := servers[pluginName].(map[string]any)
+	if !ok || len(servers) != 1 {
+		return fmt.Errorf("Claude manifest 必须且只能声明 %s MCP server", pluginName)
+	}
+	for key := range server {
+		if key != "command" && key != "args" && key != "env" {
+			return fmt.Errorf("Claude MCP 不支持字段 %s；binary 必须经 %s 定位", key, claudePluginRootPlaceholder)
+		}
+	}
+	args, _ := server["args"].([]any)
+	if stringValue(server, "command") != claudeMCPCommand || len(args) != 1 || args[0] != "mcp" {
+		return fmt.Errorf("Claude MCP 必须由 %s mcp 启动", claudeMCPCommand)
+	}
+	environment, hasEnvironment := server["env"].(map[string]any)
+	if _, exists := server["env"]; exists != testMarker || hasEnvironment != testMarker {
+		return errors.New("Claude MCP 测试环境变量状态与 stage 模式不一致")
+	}
+	if testMarker {
+		expected := goTestEnvironment(pluginName, skillName, claudePluginRootPlaceholder)
+		if len(environment) != len(expected) {
+			return errors.New("Claude MCP go-test 环境变量不完整")
+		}
+		for key, value := range expected {
+			if environment[key] != value {
+				return fmt.Errorf("Claude MCP go-test 环境变量 %s 无效", key)
+			}
+		}
+	}
+	return nil
+}
+
+func validateClaudeMarketplace(marketplace map[string]any, marketplaceName, pluginName, displayName string, testMarker bool) error {
+	expectedDescription := "DRAG Local Marketplace"
+	if testMarker {
+		expectedDescription += " (Go Test)"
+	}
+	owner, _ := marketplace["owner"].(map[string]any)
+	if stringValue(marketplace, "name") != marketplaceName || stringValue(owner, "name") != "tadazly" || stringValue(marketplace, "description") != expectedDescription {
+		return fmt.Errorf("Claude marketplace 必须为 %s，owner 为 tadazly", marketplaceName)
+	}
+	plugins, ok := marketplace["plugins"].([]any)
+	if !ok || len(plugins) != 1 {
+		return errors.New("Claude marketplace 必须且只能声明一个 Plugin")
+	}
+	entry, ok := plugins[0].(map[string]any)
+	if !ok || stringValue(entry, "name") != pluginName || stringValue(entry, "source") != "./plugins/"+pluginName || stringValue(entry, "displayName") != displayName {
+		return fmt.Errorf("Claude marketplace entry 必须指向 ./plugins/%s", pluginName)
+	}
+	// plugin.json 是版本与组件的唯一权威：条目不固定 version，也不关闭 strict。
+	if _, exists := entry["version"]; exists {
+		return errors.New("Claude marketplace entry 不得声明 version，版本以 plugin.json 为准")
+	}
+	if strict, exists := entry["strict"]; exists && strict != true {
+		return errors.New("Claude marketplace entry 不得关闭 strict")
+	}
+	return nil
+}
+
+// validateSkillAllowedTools keeps Claude Code's Skill-scoped pre-approval equal
+// to the Codex approval policy: every read-only tool, and no management tool.
+func validateSkillAllowedTools(skillText, pluginName string) error {
+	match := regexp.MustCompile(`(?m)^allowed-tools:[ \t]*(.+?)[ \t]*$`).FindStringSubmatch(skillText)
+	if match == nil {
+		return errors.New("Skill 缺少 allowed-tools 只读工具预授权")
+	}
+	prefix := "mcp__plugin_" + pluginName + "_" + pluginName + "__"
+	expected := make([]string, 0, len(readOnlyToolNames))
+	for _, toolName := range readOnlyToolNames {
+		expected = append(expected, prefix+toolName)
+	}
+	actual := strings.Fields(match[1])
+	sort.Strings(expected)
+	sort.Strings(actual)
+	if strings.Join(actual, " ") != strings.Join(expected, " ") {
+		return fmt.Errorf("Skill allowed-tools 必须恰好是 %s 前缀的 %d 个只读工具：%v", prefix, len(expected), actual)
+	}
+	return nil
 }
 
 func identity(testMarker bool) (pluginName, marketplaceName, displayName, skillName string) {
@@ -361,8 +533,10 @@ func Build(ctx context.Context, options Options) (Evidence, error) {
 			return Evidence{}, err
 		}
 	}
-	if err := os.MkdirAll(filepath.Join(marketplaceRoot, ".agents", "plugins"), 0o755); err != nil {
-		return Evidence{}, err
+	for _, directory := range []string{filepath.Join(marketplaceRoot, ".agents", "plugins"), filepath.Join(marketplaceRoot, ".claude-plugin")} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			return Evidence{}, err
+		}
 	}
 	if err := rewriteStageMetadata(root, marketplaceRoot, pluginStage, pluginName, marketplaceName, displayName, skillName, options.TestMarker, target); err != nil {
 		return Evidence{}, err
@@ -400,6 +574,7 @@ func Build(ctx context.Context, options Options) (Evidence, error) {
 	}
 	runtimeStatus, runtimeReason := "NOT_TESTED", fmt.Sprintf("当前宿主 %s/%s 无法执行 %s/%s", runtime.GOOS, runtime.GOARCH, target.GOOS, target.GOARCH)
 	mcpHandshake, mcpReason := "NOT_TESTED", runtimeReason
+	claudeMCPHandshake, claudeMCPReason := "NOT_TESTED", runtimeReason
 	if runtime.GOOS == target.GOOS && runtime.GOARCH == target.GOARCH {
 		command := exec.CommandContext(ctx, binaryPath, "--version", "--json")
 		command.Dir = pluginStage
@@ -413,17 +588,26 @@ func Build(ctx context.Context, options Options) (Evidence, error) {
 		}
 		runtimeStatus, runtimeReason = "PASS", ""
 		if options.TestMarker {
-			if err := smokeMCP(ctx, pluginStage, workTargetRoot, pluginName, skillName); err != nil {
+			codexLaunch, err := codexMCPLaunch(pluginStage, pluginName)
+			if err != nil {
+				return Evidence{}, err
+			}
+			if err := smokeMCP(ctx, codexLaunch, workTargetRoot, pluginName, skillName); err != nil {
 				return Evidence{}, err
 			}
 			mcpHandshake, mcpReason = "PASS", ""
+			if err := smokeClaudeMCP(ctx, pluginStage, workTargetRoot, pluginName, skillName); err != nil {
+				return Evidence{}, err
+			}
+			claudeMCPHandshake, claudeMCPReason = "PASS", ""
 		} else {
 			mcpReason = "正式身份不在本机启动 MCP；使用隔离的 go-test stage 完成运行时验收"
+			claudeMCPReason = mcpReason
 		}
 	}
 	finalTargetRoot := filepath.Join(outputRoot, target.ID)
 	finalMarketplaceRoot := filepath.Join(finalTargetRoot, marketplaceName)
-	evidence := Evidence{Status: "PASS", Mode: map[bool]string{true: "pack", false: "stage-only"}[options.Pack], Target: target.ID, PluginName: pluginName, MarketplaceName: marketplaceName, MCPServerName: pluginName, SkillName: skillName, Version: static.Version, StageRoot: finalMarketplaceRoot, Binary: binary, RuntimeExecution: runtimeStatus, RuntimeReason: runtimeReason, MCPHandshake: mcpHandshake, MCPReason: mcpReason, LicenseFileCount: licenses.FileCount, SourceManifestSHA256: sourceHash, DependencyManifestSHA256: licenses.ManifestSHA256, LocalPatchSHA256: licenses.LocalPatchSHA256, NodeArtifactCount: count, TestMarkerIsolated: options.TestMarker, ArchiveValidation: "NOT_APPLICABLE"}
+	evidence := Evidence{Status: "PASS", Mode: map[bool]string{true: "pack", false: "stage-only"}[options.Pack], Target: target.ID, PluginName: pluginName, MarketplaceName: marketplaceName, MCPServerName: pluginName, SkillName: skillName, Version: static.Version, StageRoot: finalMarketplaceRoot, Binary: binary, RuntimeExecution: runtimeStatus, RuntimeReason: runtimeReason, MCPHandshake: mcpHandshake, MCPReason: mcpReason, ClaudeMCPHandshake: claudeMCPHandshake, ClaudeMCPReason: claudeMCPReason, LicenseFileCount: licenses.FileCount, SourceManifestSHA256: sourceHash, DependencyManifestSHA256: licenses.ManifestSHA256, LocalPatchSHA256: licenses.LocalPatchSHA256, NodeArtifactCount: count, TestMarkerIsolated: options.TestMarker, ArchiveValidation: "NOT_APPLICABLE"}
 	if options.Pack {
 		archiveName := fmt.Sprintf("%s-%s-%s.zip", marketplaceName, static.Version, target.ID)
 		archivePath := filepath.Join(workTargetRoot, archiveName)
@@ -607,36 +791,146 @@ func copyFile(source, destination string, mode os.FileMode) error {
 	return closeErr
 }
 
-func smokeMCP(parent context.Context, pluginRoot, targetRoot, pluginName, skillName string) error {
-	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
-	defer cancel()
-	mcpConfig, err := readJSONObject(filepath.Join(pluginRoot, ".mcp.json"))
+// mcpLaunch is the process a host would start from the staged MCP config.
+type mcpLaunch struct {
+	Host    string
+	Command string
+	Args    []string
+	Env     map[string]string
+	Dir     string
+}
+
+func insidePlugin(pluginRoot, path string) bool {
+	relative, err := filepath.Rel(pluginRoot, path)
+	return err == nil && relative != "." && !strings.HasPrefix(relative, "..") && !filepath.IsAbs(relative)
+}
+
+func stringArguments(value any) ([]string, error) {
+	raw, _ := value.([]any)
+	result := make([]string, 0, len(raw))
+	for _, item := range raw {
+		argument, ok := item.(string)
+		if !ok {
+			return nil, errors.New("staged MCP args 含非字符串")
+		}
+		result = append(result, argument)
+	}
+	return result, nil
+}
+
+func stringEnvironment(value any) (map[string]string, error) {
+	raw, _ := value.(map[string]any)
+	result := make(map[string]string, len(raw))
+	for key, item := range raw {
+		text, ok := item.(string)
+		if !ok {
+			return nil, fmt.Errorf("staged MCP env %s 不是字符串", key)
+		}
+		result[key] = text
+	}
+	return result, nil
+}
+
+// codexMCPLaunch mirrors Codex: the command is relative to the plugin root and
+// the process runs with cwd set to the plugin root.
+func codexMCPLaunch(pluginRoot, pluginName string) (mcpLaunch, error) {
+	mcpConfig, err := readJSONObject(filepath.Join(pluginRoot, codexMCPConfigFile))
 	if err != nil {
-		return err
+		return mcpLaunch{}, err
 	}
 	servers, err := nestedObject(mcpConfig, "mcpServers")
 	if err != nil {
-		return err
+		return mcpLaunch{}, err
 	}
 	server, ok := servers[pluginName].(map[string]any)
 	if !ok || len(servers) != 1 {
-		return fmt.Errorf("staged .mcp.json 缺少唯一 server：%s", pluginName)
+		return mcpLaunch{}, fmt.Errorf("staged %s 缺少唯一 server：%s", codexMCPConfigFile, pluginName)
 	}
-	commandRelative := filepath.FromSlash(strings.TrimPrefix(stringValue(server, "command"), "./"))
-	binaryPath := filepath.Join(pluginRoot, commandRelative)
-	if relative, relErr := filepath.Rel(pluginRoot, binaryPath); relErr != nil || strings.HasPrefix(relative, "..") || filepath.IsAbs(relative) {
-		return fmt.Errorf("staged MCP command 越界：%s", binaryPath)
+	binaryPath := filepath.Join(pluginRoot, filepath.FromSlash(strings.TrimPrefix(stringValue(server, "command"), "./")))
+	if !insidePlugin(pluginRoot, binaryPath) {
+		return mcpLaunch{}, fmt.Errorf("staged Codex MCP command 越界：%s", binaryPath)
 	}
-	rawArgs, _ := server["args"].([]any)
-	args := make([]string, 0, len(rawArgs))
-	for _, value := range rawArgs {
-		argument, ok := value.(string)
-		if !ok {
-			return errors.New("staged MCP args 含非字符串")
+	args, err := stringArguments(server["args"])
+	if err != nil {
+		return mcpLaunch{}, err
+	}
+	environment, err := stringEnvironment(server["env"])
+	if err != nil {
+		return mcpLaunch{}, err
+	}
+	return mcpLaunch{Host: "codex", Command: binaryPath, Args: args, Env: environment, Dir: pluginRoot}, nil
+}
+
+// claudeMCPLaunch mirrors Claude Code: ${CLAUDE_PLUGIN_ROOT} is substituted in
+// command, args and env, and the process runs in the user's project directory.
+func claudeMCPLaunch(pluginRoot, pluginName, workingDir string) (mcpLaunch, error) {
+	manifest, err := readJSONObject(filepath.Join(pluginRoot, ".claude-plugin", "plugin.json"))
+	if err != nil {
+		return mcpLaunch{}, err
+	}
+	servers, _ := manifest["mcpServers"].(map[string]any)
+	server, ok := servers[pluginName].(map[string]any)
+	if !ok || len(servers) != 1 {
+		return mcpLaunch{}, fmt.Errorf("staged Claude manifest 缺少唯一 MCP server：%s", pluginName)
+	}
+	expand := func(value string) (string, error) {
+		expanded := strings.ReplaceAll(value, claudePluginRootPlaceholder, pluginRoot)
+		if strings.Contains(expanded, "${") {
+			return "", fmt.Errorf("staged Claude MCP 含未支持的占位符：%s", value)
 		}
-		args = append(args, argument)
+		return expanded, nil
 	}
-	stateRoot := filepath.Join(targetRoot, ".mcp-smoke-state")
+	command, err := expand(stringValue(server, "command"))
+	if err != nil {
+		return mcpLaunch{}, err
+	}
+	command = filepath.Clean(command)
+	if !insidePlugin(pluginRoot, command) {
+		return mcpLaunch{}, fmt.Errorf("staged Claude MCP command 越界：%s", command)
+	}
+	args, err := stringArguments(server["args"])
+	if err != nil {
+		return mcpLaunch{}, err
+	}
+	for index := range args {
+		if args[index], err = expand(args[index]); err != nil {
+			return mcpLaunch{}, err
+		}
+	}
+	environment, err := stringEnvironment(server["env"])
+	if err != nil {
+		return mcpLaunch{}, err
+	}
+	for key, value := range environment {
+		if environment[key], err = expand(value); err != nil {
+			return mcpLaunch{}, err
+		}
+	}
+	// Claude Code exports these to plugin MCP subprocesses.
+	environment["CLAUDE_PLUGIN_ROOT"] = pluginRoot
+	environment["CLAUDE_PROJECT_DIR"] = workingDir
+	return mcpLaunch{Host: "claude-code", Command: command, Args: args, Env: environment, Dir: workingDir}, nil
+}
+
+func smokeClaudeMCP(ctx context.Context, pluginRoot, targetRoot, pluginName, skillName string) error {
+	// Claude Code does not honor cwd; run from a directory outside the plugin to
+	// prove the binary, Skill resources and state never depend on it.
+	workingDir, err := os.MkdirTemp("", "drag-claude-project-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(workingDir)
+	launch, err := claudeMCPLaunch(pluginRoot, pluginName, workingDir)
+	if err != nil {
+		return err
+	}
+	return smokeMCP(ctx, launch, targetRoot, pluginName, skillName)
+}
+
+func smokeMCP(parent context.Context, launch mcpLaunch, targetRoot, pluginName, skillName string) error {
+	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
+	defer cancel()
+	stateRoot := filepath.Join(targetRoot, ".mcp-smoke-state-"+launch.Host)
 	defer os.RemoveAll(stateRoot)
 	sourceRoot := filepath.Join(stateRoot, "source")
 	if err := os.MkdirAll(sourceRoot, 0o755); err != nil {
@@ -650,32 +944,26 @@ func smokeMCP(parent context.Context, pluginRoot, targetRoot, pluginName, skillN
 	if _, err := configStore.SaveSnapshot(config); err != nil {
 		return fmt.Errorf("准备 staged MCP 隔离配置失败: %w", err)
 	}
-	command := exec.Command(binaryPath, args...)
-	command.Dir = pluginRoot
+	command := exec.Command(launch.Command, launch.Args...)
+	command.Dir = launch.Dir
 	command.Env = append([]string{}, os.Environ()...)
-	if environment, ok := server["env"].(map[string]any); ok {
-		keys := make([]string, 0, len(environment))
-		for key := range environment {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		for _, key := range keys {
-			value, ok := environment[key].(string)
-			if !ok {
-				return fmt.Errorf("staged MCP env %s 不是字符串", key)
-			}
-			command.Env = append(command.Env, key+"="+value)
-		}
+	keys := make([]string, 0, len(launch.Env))
+	for key := range launch.Env {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		command.Env = append(command.Env, key+"="+launch.Env[key])
 	}
 	// Only state paths are overridden for the smoke; command, args, identity,
-	// resource scheme, Skill name and Plugin root come from staged .mcp.json.
+	// resource scheme, Skill name and Plugin root come from the staged host config.
 	command.Env = append(command.Env, "DESIGN_RAG_CONFIG_DIR="+filepath.Join(stateRoot, "config"), "DESIGN_RAG_DATA_DIR="+filepath.Join(stateRoot, "data"))
 	stderr := &bytes.Buffer{}
 	command.Stderr = stderr
-	client := mcp.NewClient(&mcp.Implementation{Name: "drag-plugin-stage-smoke", Version: "1"}, nil)
+	client := mcp.NewClient(&mcp.Implementation{Name: "drag-plugin-stage-smoke-" + launch.Host, Version: "1"}, nil)
 	session, err := client.Connect(ctx, &mcp.CommandTransport{Command: command}, nil)
 	if err != nil {
-		return fmt.Errorf("staged MCP 握手失败: %w: %s", err, strings.TrimSpace(stderr.String()))
+		return fmt.Errorf("staged %s MCP 握手失败: %w: %s", launch.Host, err, strings.TrimSpace(stderr.String()))
 	}
 	defer session.Close()
 	resources, err := session.ListResources(ctx, nil)
@@ -922,7 +1210,7 @@ func rewriteStageMetadata(projectRoot, marketplaceRoot, pluginStage, pluginName,
 	if err := writeJSON(manifestPath, manifest); err != nil {
 		return err
 	}
-	mcpPath := filepath.Join(pluginStage, ".mcp.json")
+	mcpPath := filepath.Join(pluginStage, codexMCPConfigFile)
 	mcpConfig, err := readJSONObject(mcpPath)
 	if err != nil {
 		return err
@@ -932,16 +1220,32 @@ func rewriteStageMetadata(projectRoot, marketplaceRoot, pluginStage, pluginName,
 	server["command"] = "./bin/" + target.BinaryName
 	server["args"] = []any{"mcp"}
 	if testMarker {
-		server["env"] = map[string]any{
-			"DESIGN_RAG_MCP_NAME":        pluginName,
-			"DESIGN_RAG_RESOURCE_SCHEME": pluginName,
-			"DESIGN_RAG_SKILL_NAME":      skillName,
-			"DESIGN_RAG_PLUGIN_ROOT":     ".",
-			"DESIGN_RAG_STATE_NAMESPACE": pluginName,
-		}
+		server["env"] = goTestEnvironment(pluginName, skillName, ".")
 	}
 	mcpConfig["mcpServers"] = map[string]any{pluginName: server}
 	if err := writeJSON(mcpPath, mcpConfig); err != nil {
+		return err
+	}
+	// The Claude command stays ${CLAUDE_PLUGIN_ROOT}/bin/drag for every target:
+	// the git tag tree ships drag and drag.exe side by side, and Claude Code on
+	// Windows resolves the extensionless path to drag.exe.
+	claudeManifestPath := filepath.Join(pluginStage, ".claude-plugin", "plugin.json")
+	claudeManifest, err := readJSONObject(claudeManifestPath)
+	if err != nil {
+		return err
+	}
+	claudeManifest["name"] = pluginName
+	claudeManifest["displayName"] = displayName
+	claudeServers, _ := claudeManifest["mcpServers"].(map[string]any)
+	claudeServer, _ := claudeServers[ProductionPluginName].(map[string]any)
+	if claudeServer == nil {
+		return errors.New("Claude manifest 缺少 design-rag MCP server")
+	}
+	if testMarker {
+		claudeServer["env"] = goTestEnvironment(pluginName, skillName, claudePluginRootPlaceholder)
+	}
+	claudeManifest["mcpServers"] = map[string]any{pluginName: claudeServer}
+	if err := writeJSON(claudeManifestPath, claudeManifest); err != nil {
 		return err
 	}
 	if testMarker {
@@ -968,7 +1272,23 @@ func rewriteStageMetadata(projectRoot, marketplaceRoot, pluginStage, pluginName,
 	entry["name"] = pluginName
 	source, _ := nestedObject(entry, "source")
 	source["path"] = "./plugins/" + pluginName
-	return writeJSON(filepath.Join(marketplaceRoot, ".agents", "plugins", "marketplace.json"), marketplace)
+	if err := writeJSON(filepath.Join(marketplaceRoot, ".agents", "plugins", "marketplace.json"), marketplace); err != nil {
+		return err
+	}
+	claudeMarketplace, err := readJSONObject(filepath.Join(projectRoot, "packaging", "design-rag-claude-marketplace.json"))
+	if err != nil {
+		return err
+	}
+	claudeMarketplace["name"] = marketplaceName
+	if testMarker {
+		claudeMarketplace["description"] = "DRAG Local Marketplace (Go Test)"
+	}
+	claudePlugins, _ := claudeMarketplace["plugins"].([]any)
+	claudeEntry, _ := claudePlugins[0].(map[string]any)
+	claudeEntry["name"] = pluginName
+	claudeEntry["source"] = "./plugins/" + pluginName
+	claudeEntry["displayName"] = displayName
+	return writeJSON(filepath.Join(marketplaceRoot, ".claude-plugin", "marketplace.json"), claudeMarketplace)
 }
 
 func replaceTextTree(root string, extensions []string, replacements map[string]string) error {
@@ -1062,7 +1382,10 @@ func validateStage(pluginRoot, marketplaceRoot, pluginName, marketplaceName, ski
 	if stringValue(interfaceObject, "websiteURL") != productionWebsite {
 		return errors.New("stage websiteURL 无效")
 	}
-	mcpConfig, err := readJSONObject(filepath.Join(pluginRoot, ".mcp.json"))
+	if err := rejectClaudeDefaultMCPConfig(pluginRoot); err != nil {
+		return err
+	}
+	mcpConfig, err := readJSONObject(filepath.Join(pluginRoot, codexMCPConfigFile))
 	if err != nil {
 		return err
 	}
@@ -1070,11 +1393,32 @@ func validateStage(pluginRoot, marketplaceRoot, pluginName, marketplaceName, ski
 	server, ok := servers[pluginName].(map[string]any)
 	args, _ := server["args"].([]any)
 	if !ok || len(servers) != 1 || stringValue(server, "command") != "./bin/"+target.BinaryName || len(args) != 1 || args[0] != "mcp" || stringValue(server, "cwd") != "." {
-		return errors.New("stage MCP 未直接调用唯一 Go runtime")
+		return errors.New("stage Codex MCP 未直接调用唯一 Go runtime")
 	}
-	_, hasEnvironment := server["env"]
-	if testMarker != hasEnvironment {
+	environment, hasEnvironment := server["env"].(map[string]any)
+	if _, exists := server["env"]; testMarker != exists || testMarker != hasEnvironment {
 		return errors.New("go-test 隔离环境变量状态与 stage 模式不一致")
+	}
+	if testMarker {
+		for key, value := range goTestEnvironment(pluginName, skillName, ".") {
+			if environment[key] != value {
+				return fmt.Errorf("stage Codex MCP go-test 环境变量 %s 无效", key)
+			}
+		}
+	}
+	claudeManifest, err := readJSONObject(filepath.Join(pluginRoot, ".claude-plugin", "plugin.json"))
+	if err != nil {
+		return err
+	}
+	if err := validateClaudeManifest(claudeManifest, pluginName, displayName, skillName, expectedVersion, testMarker); err != nil {
+		return fmt.Errorf("stage %w", err)
+	}
+	claudeMarketplace, err := readJSONObject(filepath.Join(marketplaceRoot, ".claude-plugin", "marketplace.json"))
+	if err != nil {
+		return err
+	}
+	if err := validateClaudeMarketplace(claudeMarketplace, marketplaceName, pluginName, displayName, testMarker); err != nil {
+		return fmt.Errorf("stage %w", err)
 	}
 	skillPath := filepath.Join(pluginRoot, "skills", skillName, "SKILL.md")
 	if _, err := os.Stat(skillPath); err != nil {
@@ -1093,6 +1437,9 @@ func validateStage(pluginRoot, marketplaceRoot, pluginName, marketplaceName, ski
 	if !regexp.MustCompile(`(?m)^name:\s*`+regexp.QuoteMeta(skillName)+`\s*$`).MatchString(skillText) || strings.Contains(skillText, "go-test-go-test") {
 		return fmt.Errorf("stage Skill frontmatter 身份无效：%s", skillName)
 	}
+	if err := validateSkillAllowedTools(skillText, pluginName); err != nil {
+		return fmt.Errorf("stage %w", err)
+	}
 	marketplace, err := readJSONObject(filepath.Join(marketplaceRoot, ".agents", "plugins", "marketplace.json"))
 	if err != nil || stringValue(marketplace, "name") != marketplaceName {
 		return errors.New("stage marketplace identity 无效")
@@ -1107,11 +1454,13 @@ func validateStage(pluginRoot, marketplaceRoot, pluginName, marketplaceName, ski
 	}
 	if !testMarker {
 		identityFiles := []string{
-			filepath.Join(pluginRoot, ".mcp.json"),
+			filepath.Join(pluginRoot, codexMCPConfigFile),
 			filepath.Join(pluginRoot, ".codex-plugin", "plugin.json"),
+			filepath.Join(pluginRoot, ".claude-plugin", "plugin.json"),
 			filepath.Join(pluginRoot, "skills", skillName, "SKILL.md"),
 			filepath.Join(pluginRoot, "skills", skillName, "agents", "openai.yaml"),
 			filepath.Join(marketplaceRoot, ".agents", "plugins", "marketplace.json"),
+			filepath.Join(marketplaceRoot, ".claude-plugin", "marketplace.json"),
 		}
 		for _, path := range identityFiles {
 			if bytes.Contains(mustRead(path), []byte("go-test")) {
@@ -1156,7 +1505,26 @@ func findNodeArtifacts(root string) (int, []string, error) {
 }
 
 func writeInstallGuide(path, pluginName, marketplaceName string, target Target) error {
-	content := fmt.Sprintf("# DRAG 游戏策划知识库 Plugin\n\n1. 将 `%s` 目录保持完整。\n2. 运行 `codex plugin marketplace add <该目录绝对路径>`。\n3. 运行 `codex plugin add %s@%s`。\n4. 重启 Codex host/Desktop 以刷新本地 Plugin cache，再新建任务。\n\nCLI：`./plugins/%s/bin/%s --help`。MCP 与 CLI 均由同一个纯 Go binary 提供。\n", marketplaceName, pluginName, marketplaceName, pluginName, target.BinaryName)
+	content := fmt.Sprintf(`# DRAG 游戏策划知识库 Plugin
+
+`+"`%[1]s`"+` 目录同时是 Codex 与 Claude Code 的本地 marketplace。安装前把它解压到固定位置并保持目录完整。
+
+## Codex
+
+1. 运行 `+"`codex plugin marketplace add <该目录绝对路径>`"+`。
+2. 运行 `+"`codex plugin add %[2]s@%[1]s`"+`。
+3. 重启 Codex host/Desktop 以刷新本地 Plugin cache，再新建任务。
+
+## Claude Code
+
+1. 运行 `+"`claude plugin marketplace add <该目录绝对路径>`"+`。
+2. 运行 `+"`claude plugin install %[2]s@%[1]s`"+`。
+3. 新开 Claude Code 会话；已运行的会话不会加载新的 MCP server。
+
+Claude Code 直接从该目录加载 Plugin，移动或删除目录后需要重新添加 marketplace。两个宿主共用同一份来源配置与本地索引。
+
+CLI：`+"`./plugins/%[2]s/bin/%[3]s --help`"+`。MCP 与 CLI 均由同一个纯 Go binary 提供。
+`, marketplaceName, pluginName, target.BinaryName)
 	return os.WriteFile(path, []byte(content), 0o644)
 }
 
@@ -1240,13 +1608,20 @@ func validateZip(path, marketplaceName, pluginName, binaryName, expectedVersion 
 		return fmt.Errorf("重新打开 archive 失败: %w", err)
 	}
 	defer reader.Close()
-	manifestEntry := marketplaceName + "/plugins/" + pluginName + "/.codex-plugin/plugin.json"
+	pluginPrefix := marketplaceName + "/plugins/" + pluginName + "/"
+	manifestEntries := map[string]bool{
+		pluginPrefix + ".codex-plugin/plugin.json":  true,
+		pluginPrefix + ".claude-plugin/plugin.json": true,
+	}
 	requiredEntries := map[string]bool{
-		manifestEntry: false,
-		marketplaceName + "/plugins/" + pluginName + "/.mcp.json":         false,
-		marketplaceName + "/plugins/" + pluginName + "/bin/" + binaryName: false,
-		marketplaceName + "/plugins/" + pluginName + "/LICENSE":           false,
-		marketplaceName + "/plugins/" + pluginName + "/NOTICE":            false,
+		pluginPrefix + ".codex-plugin/plugin.json":            false,
+		pluginPrefix + ".claude-plugin/plugin.json":           false,
+		pluginPrefix + codexMCPConfigFile:                     false,
+		pluginPrefix + "bin/" + binaryName:                    false,
+		pluginPrefix + "LICENSE":                              false,
+		pluginPrefix + "NOTICE":                               false,
+		marketplaceName + "/.agents/plugins/marketplace.json": false,
+		marketplaceName + "/.claude-plugin/marketplace.json":  false,
 	}
 	for _, file := range reader.File {
 		name := filepath.ToSlash(file.Name)
@@ -1260,10 +1635,13 @@ func validateZip(path, marketplaceName, pluginName, binaryName, expectedVersion 
 		if strings.Contains(lower, "/node_modules/") || strings.Contains(lower, "/runtime/") || strings.Contains(lower, "/runtime-package/") || base == "node" || base == "node.exe" || base == "drag.cmd" || base == "package.json" || base == "package-lock.json" || extension == ".js" || extension == ".mjs" || extension == ".cjs" || extension == ".jsx" || extension == ".ts" || extension == ".tsx" || extension == ".node" {
 			return fmt.Errorf("archive 含 Node/JavaScript entry：%s", name)
 		}
+		if name == pluginPrefix+claudeDefaultMCPConfigFile {
+			return fmt.Errorf("archive 不得包含 Claude Code 默认加载的 %s：%s", claudeDefaultMCPConfigFile, name)
+		}
 		if _, required := requiredEntries[name]; required {
 			requiredEntries[name] = true
 		}
-		if name == manifestEntry {
+		if manifestEntries[name] {
 			input, openErr := file.Open()
 			if openErr != nil {
 				return fmt.Errorf("读取 archive manifest 失败: %w", openErr)

@@ -1,0 +1,16 @@
+{
+  "name": "design-rag-local",
+  "owner": {
+    "name": "tadazly"
+  },
+  "description": "DRAG Local Marketplace",
+  "plugins": [
+    {
+      "name": "design-rag",
+      "source": "./plugins/design-rag",
+      "displayName": "DRAG 游戏策划知识库",
+      "description": "DRAG 本地游戏策划案与配置表检索、分析和索引管理工具",
+      "category": "productivity"
+    }
+  ]
+}

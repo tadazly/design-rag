@@ -236,6 +236,15 @@ func ResolveSkillRoot() (string, error) {
 
 func boolPointer(value bool) *bool { return &value }
 
+// Claude Code 把超过 MAX_MCP_OUTPUT_TOKENS（默认 25,000 token）的工具结果转存为文件。
+// Skill 常规预算（search limit ≤ 20、retrieve ≤ 8 份文档）下证据类结果约 70k–110k 字符，
+// 因此通过 _meta 声明上限让它们留在对话里；广泛盘点仍会超限并转存。其他宿主忽略该字段。
+const evidenceResultSizeChars = 150_000
+
+func evidenceToolMeta() mcp.Meta {
+	return mcp.Meta{"anthropic/maxResultSizeChars": evidenceResultSizeChars}
+}
+
 var (
 	readOnlyAnnotations           = &mcp.ToolAnnotations{ReadOnlyHint: true, DestructiveHint: boolPointer(false), IdempotentHint: true, OpenWorldHint: boolPointer(false)}
 	mutatingAnnotations           = &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: boolPointer(false), IdempotentHint: false, OpenWorldHint: boolPointer(false)}
@@ -451,7 +460,7 @@ func NewMCPServer(service *RuntimeService) (*mcp.Server, *BackgroundIndexJob, er
 	fresh := func() error { _, err := service.ReloadConfigIfChanged(); return err }
 
 	searchProperties := commonSearchProperties()
-	addTool(server, &mcp.Tool{Name: "drag_search", Title: "搜索游戏策划知识", Description: "从所有启用的本地策划案和配置表中筛选命中文档，默认按有效业务日期从新到旧；citation.sourceLink 提供用户可见的文件链接与原文位置。", InputSchema: objectSchema(searchProperties, "query"), Annotations: readOnlyAnnotations}, func(ctx context.Context, request *mcp.CallToolRequest) (any, string, error) {
+	addTool(server, &mcp.Tool{Name: "drag_search", Title: "搜索游戏策划知识", Description: "从所有启用的本地策划案和配置表中筛选命中文档，默认按有效业务日期从新到旧；citation.sourceLink 提供用户可见的文件链接与原文位置。", InputSchema: objectSchema(searchProperties, "query"), Annotations: readOnlyAnnotations, Meta: evidenceToolMeta()}, func(ctx context.Context, request *mcp.CallToolRequest) (any, string, error) {
 		input, err := decodeToolInput[SearchRequest](request)
 		if err == nil {
 			err = validateSearchRequest(input)
@@ -471,7 +480,7 @@ func NewMCPServer(service *RuntimeService) (*mcp.Server, *BackgroundIndexJob, er
 	retrieveProperties["maxDocuments"] = map[string]any{"type": "integer", "minimum": 1, "maximum": 50, "description": "证据包最多保留 50 份文档；广泛盘点可设为 30-50"}
 	retrieveProperties["maxChunksPerDocument"] = map[string]any{"type": "integer", "minimum": 1, "maximum": 10, "description": "每份文档最多 10 个片段；需要更多细节时拆分为多次检索"}
 	retrieveProperties["maxChars"] = map[string]any{"type": "integer", "minimum": 2000, "maximum": 60000}
-	addTool(server, &mcp.Tool{Name: "drag_retrieve", Title: "生成游戏策划证据包", Description: "生成字符预算受控、同时平衡策划案和配置表且带 citationId/sourceLink 的证据包；只检索，不生成答案。", InputSchema: objectSchema(retrieveProperties, "query"), Annotations: readOnlyAnnotations}, func(ctx context.Context, request *mcp.CallToolRequest) (any, string, error) {
+	addTool(server, &mcp.Tool{Name: "drag_retrieve", Title: "生成游戏策划证据包", Description: "生成字符预算受控、同时平衡策划案和配置表且带 citationId/sourceLink 的证据包；只检索，不生成答案。", InputSchema: objectSchema(retrieveProperties, "query"), Annotations: readOnlyAnnotations, Meta: evidenceToolMeta()}, func(ctx context.Context, request *mcp.CallToolRequest) (any, string, error) {
 		input, err := decodeToolInput[RetrievalRequest](request)
 		if err == nil {
 			err = validateSearchRequest(input.SearchRequest)
@@ -489,7 +498,7 @@ func NewMCPServer(service *RuntimeService) (*mcp.Server, *BackgroundIndexJob, er
 		return result, "", err
 	})
 
-	addTool(server, &mcp.Tool{Name: "drag_read_citation", Title: "读取策划引用", Description: "按 citationId 回读启用来源中的索引原文并检查 revision；回答时复制 citation.sourceLink.markdown，显示可点击原文件与 sheet/range/行号，不要只显示 chunk ID。", InputSchema: objectSchema(map[string]any{"citationId": map[string]any{"type": "string", "minLength": 4}, "expectedIndexRevision": map[string]any{"type": "integer", "minimum": 0}}, "citationId"), Annotations: readOnlyAnnotations}, func(ctx context.Context, request *mcp.CallToolRequest) (any, string, error) {
+	addTool(server, &mcp.Tool{Name: "drag_read_citation", Title: "读取策划引用", Description: "按 citationId 回读启用来源中的索引原文并检查 revision；回答时复制 citation.sourceLink.markdown，显示可点击原文件与 sheet/range/行号，不要只显示 chunk ID。", InputSchema: objectSchema(map[string]any{"citationId": map[string]any{"type": "string", "minLength": 4}, "expectedIndexRevision": map[string]any{"type": "integer", "minimum": 0}}, "citationId"), Annotations: readOnlyAnnotations, Meta: evidenceToolMeta()}, func(ctx context.Context, request *mcp.CallToolRequest) (any, string, error) {
 		input, err := decodeToolInput[citationInput](request)
 		if err == nil && (utf16Length(strings.TrimSpace(input.CitationID)) < 4 || input.ExpectedIndexRevision != nil && *input.ExpectedIndexRevision < 0) {
 			err = fmt.Errorf("citationId 或 expectedIndexRevision 无效")
@@ -504,7 +513,7 @@ func NewMCPServer(service *RuntimeService) (*mcp.Server, *BackgroundIndexJob, er
 		return result, "", err
 	})
 
-	addTool(server, &mcp.Tool{Name: "drag_list_versions", Title: "列出策划历史版本", Description: "按 documentId 或 familyKey 列出启用来源中的同一策划线历史版本，默认从新到旧。", InputSchema: objectSchema(map[string]any{"documentId": map[string]any{"type": "string"}, "familyKey": map[string]any{"type": "string"}, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 100}}), Annotations: readOnlyAnnotations}, func(ctx context.Context, request *mcp.CallToolRequest) (any, string, error) {
+	addTool(server, &mcp.Tool{Name: "drag_list_versions", Title: "列出策划历史版本", Description: "按 documentId 或 familyKey 列出启用来源中的同一策划线历史版本，默认从新到旧。", InputSchema: objectSchema(map[string]any{"documentId": map[string]any{"type": "string"}, "familyKey": map[string]any{"type": "string"}, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 100}}), Annotations: readOnlyAnnotations, Meta: evidenceToolMeta()}, func(ctx context.Context, request *mcp.CallToolRequest) (any, string, error) {
 		input, err := decodeToolInput[versionsInput](request)
 		if err == nil && input.DocumentID == "" && input.FamilyKey == "" {
 			err = fmt.Errorf("documentId 或 familyKey 至少提供一个")

@@ -24,8 +24,8 @@ const downloads = `## 下载与安装
 
 | 文件 | 用途 |
 |---|---|
-| \`design-rag-local-${version}-win32-x64.zip\` | Codex Plugin 的 Windows x64 本地或离线安装包；只使用 Codex Plugin 时下载。 |
-| \`design-rag-local-${version}-darwin-arm64.zip\` | Codex Plugin 的 Apple Silicon macOS 本地或离线安装包；只使用 Codex Plugin 时下载。 |
+| \`design-rag-local-${version}-win32-x64.zip\` | Codex / Claude Code Plugin 的 Windows x64 本地或离线安装包；解压后的目录同时是两个宿主的本地 marketplace，只使用 Plugin 时下载。 |
+| \`design-rag-local-${version}-darwin-arm64.zip\` | Codex / Claude Code Plugin 的 Apple Silicon macOS 本地或离线安装包；解压后的目录同时是两个宿主的本地 marketplace，只使用 Plugin 时下载。 |
 | \`design-rag-gui-${version}-win-x64.exe\` | Windows x64 桌面客户端。 |
 | \`design-rag-gui-${version}-mac-arm64.dmg\` | Apple Silicon macOS 桌面客户端。 |
 | \`SHA256SUMS.txt\` | 上述四个安装包的 SHA-256 校验值。 |

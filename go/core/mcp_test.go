@@ -150,6 +150,17 @@ func TestMCPGoSDKContractSearchResourcesAndLifecycle(t *testing.T) {
 	if byName["drag_source_remove"].Annotations.IdempotentHint {
 		t.Fatal("drag_source_remove must not claim idempotence")
 	}
+	evidenceTools := map[string]bool{"drag_search": true, "drag_retrieve": true, "drag_read_citation": true, "drag_list_versions": true}
+	for _, name := range wantedTools {
+		limit, declared := byName[name].Meta["anthropic/maxResultSizeChars"]
+		if evidenceTools[name] {
+			if value, ok := limit.(float64); !ok || int(value) != evidenceResultSizeChars {
+				t.Fatalf("%s must declare anthropic/maxResultSizeChars=%d over the wire: %#v", name, evidenceResultSizeChars, byName[name].Meta)
+			}
+		} else if declared {
+			t.Fatalf("%s must not raise the Claude Code result size limit: %#v", name, byName[name].Meta)
+		}
+	}
 
 	search, err := clientSession.CallTool(context.Background(), &mcp.CallToolParams{Name: "drag_search", Arguments: map[string]any{"query": "轮盘奖池", "limit": 10}})
 	if err != nil || search.IsError || search.StructuredContent == nil {

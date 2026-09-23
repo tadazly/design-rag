@@ -55,6 +55,7 @@ function compareSemver(left, right) {
 const packageJson = JSON.parse(await readFile(path.join(projectRoot, "package.json"), "utf8"));
 const packageLock = JSON.parse(await readFile(path.join(projectRoot, "package-lock.json"), "utf8"));
 const plugin = JSON.parse(await readFile(path.join(projectRoot, "plugins/design-rag/.codex-plugin/plugin.json"), "utf8"));
+const claudePlugin = JSON.parse(await readFile(path.join(projectRoot, "plugins/design-rag/.claude-plugin/plugin.json"), "utf8"));
 const goModel = await readFile(path.join(projectRoot, "go/core/model.go"), "utf8");
 const contracts = await readFile(path.join(projectRoot, "src/shared/contracts.ts"), "utf8");
 
@@ -65,6 +66,7 @@ const versions = {
   packageLock: packageLock.version,
   packageLockRoot: packageLock.packages?.[""]?.version,
   plugin: plugin.version,
+  claudePlugin: claudePlugin.version,
   backend: extract(goModel, /BackendVersion\s*=\s*"([^"]+)"/, "Go backend 版本"),
   gui: extract(contracts, /APP_VERSION\s*=\s*"([^"]+)"/, "GUI 版本"),
 };

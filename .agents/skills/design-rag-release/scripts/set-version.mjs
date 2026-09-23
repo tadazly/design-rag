@@ -30,6 +30,7 @@ await updateJson("package-lock.json", (value) => {
   value.packages[""].version = version;
 });
 await updateJson("plugins/design-rag/.codex-plugin/plugin.json", (value) => { value.version = version; });
+await updateJson("plugins/design-rag/.claude-plugin/plugin.json", (value) => { value.version = version; });
 await replaceOnce("go/core/model.go", /BackendVersion\s*=\s*"[^"]+"/, `BackendVersion  = "${version}"`, "Go BackendVersion");
 await replaceOnce("src/shared/contracts.ts", /APP_VERSION\s*=\s*"[^"]+"/, `APP_VERSION = "${version}"`, "GUI APP_VERSION");
 

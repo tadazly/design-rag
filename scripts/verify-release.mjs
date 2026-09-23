@@ -34,6 +34,7 @@ function lineNumber(source, offset) {
 const packageJson = await readJson("package.json");
 const packageLock = await readJson("package-lock.json");
 const pluginManifest = await readJson("plugins/design-rag/.codex-plugin/plugin.json");
+const claudePluginManifest = await readJson("plugins/design-rag/.claude-plugin/plugin.json");
 const goModel = await readFile(path.join(projectRoot, "go/core/model.go"), "utf8");
 const contracts = await readFile(path.join(projectRoot, "src/shared/contracts.ts"), "utf8");
 const goModule = await readFile(path.join(projectRoot, "go.mod"), "utf8");
@@ -51,6 +52,7 @@ const versions = {
   packageLock: packageLock.version,
   packageLockRoot: packageLock.packages?.[""]?.version,
   plugin: pluginManifest.version,
+  claudePlugin: claudePluginManifest.version,
   backend: backendVersion,
   gui: appVersion,
 };
@@ -70,6 +72,13 @@ assert(pluginManifest.interface?.displayName === "DRAG 游戏策划知识库", "
 assert(pluginManifest.interface?.websiteURL === expectedWebsite, "Plugin websiteURL 与公开网站不一致");
 assert(pluginManifest.repository === expectedRepository, "Plugin repository 与公开仓库不一致");
 assert(pluginManifest.license === "Apache-2.0", "Plugin license 必须为 Apache-2.0");
+assert(claudePluginManifest.name === pluginManifest.name, "Claude Plugin 技术 ID 必须与 Codex Plugin 一致");
+assert(claudePluginManifest.displayName === pluginManifest.interface?.displayName, "Claude Plugin 显示名必须与 Codex Plugin 一致");
+assert(claudePluginManifest.description === pluginManifest.description, "Claude Plugin description 必须与 Codex Plugin 一致");
+assert(claudePluginManifest.author?.name === "tadazly", "Claude Plugin author 必须为 tadazly");
+assert(claudePluginManifest.homepage === expectedWebsite, "Claude Plugin homepage 与公开网站不一致");
+assert(claudePluginManifest.repository === expectedRepository, "Claude Plugin repository 与公开仓库不一致");
+assert(claudePluginManifest.license === "Apache-2.0", "Claude Plugin license 必须为 Apache-2.0");
 assert(goModule.startsWith(`module ${expectedModule}\n`) || goModule.startsWith(`module ${expectedModule}\r\n`), "Go module 路径不正确");
 assert(/^appId:\s*com\.luyilabs\.design-rag\s*$/m.test(electronBuilder), "Electron appId 不正确");
 assert(!/^\s*-\s+target:\s+zip\s*$/m.test(electronBuilder), "macOS GUI Release 不应再生成重复 ZIP");
@@ -88,7 +97,7 @@ try {
   await writeFile(evidencePath, `${JSON.stringify({ signing: { windows: "unsigned", macos: "unsigned", notarized: false } }, null, 2)}\n`, "utf8");
   capture(process.execPath, ["scripts/extract-release-notes.mjs", version, notesPath, projectRoot, evidencePath]);
   const releaseNotes = await readFile(notesPath, "utf8");
-  assert(releaseNotes.includes(`design-rag-local-${version}-win32-x64.zip`) && releaseNotes.includes("Codex Plugin"), "Release Notes 缺少 Windows Plugin 用途");
+  assert(releaseNotes.includes(`design-rag-local-${version}-win32-x64.zip`) && releaseNotes.includes("Codex / Claude Code Plugin"), "Release Notes 缺少 Windows Plugin 用途");
   assert(releaseNotes.includes(`design-rag-local-${version}-darwin-arm64.zip`) && releaseNotes.includes(`design-rag-gui-${version}-mac-arm64.dmg`), "Release Notes 缺少 macOS Plugin 或 GUI 用途");
   assert(!releaseNotes.includes(`design-rag-gui-${version}-mac-arm64.zip`), "Release Notes 不应列出已移除的 macOS GUI ZIP");
   assert(releaseNotes.includes("Windows 分发产物：未签名") && releaseNotes.includes("未完成 Apple notarization"), "Release Notes 缺少签名或 notarization 状态");
