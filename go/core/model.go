@@ -4,7 +4,7 @@ import "time"
 
 const (
 	ProtocolVersion = 3
-	BackendVersion  = "0.4.0"
+	BackendVersion  = "0.5.0"
 )
 
 type Source struct {
