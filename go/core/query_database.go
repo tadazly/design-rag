@@ -782,6 +782,28 @@ func (database *IndexDatabase) GetChunk(ctx context.Context, chunkID string) (*L
 	return &row, err
 }
 
+// PrecedingSectionChunks 返回同一文档第 ordinal 个文本块之前、紧挨着且标题路径相同的最多 limit 个文本块，按文档顺序排列。
+func (database *IndexDatabase) PrecedingSectionChunks(ctx context.Context, documentID string, ordinal int, headingPathJSON string, limit int) ([]string, error) {
+	rows, err := database.db.QueryContext(ctx, `SELECT ordinal, heading_path_json, text FROM chunks WHERE document_id=? AND ordinal<? AND ordinal>=? ORDER BY ordinal DESC`, documentID, ordinal, ordinal-limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	texts := []string{}
+	for expected := ordinal - 1; rows.Next(); expected-- {
+		var index int
+		var headingPath, text string
+		if err := rows.Scan(&index, &headingPath, &text); err != nil {
+			return nil, err
+		}
+		if index != expected || headingPath != headingPathJSON {
+			break
+		}
+		texts = append([]string{text}, texts...)
+	}
+	return texts, rows.Err()
+}
+
 func scanStoredDocument(scanner interface{ Scan(...any) error }) (StoredDocument, error) {
 	var result StoredDocument
 	var stale, needsOCR int

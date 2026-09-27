@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -39,6 +40,10 @@ type normalizedCandidateFields struct {
 
 var errIndexChangedDuringRead = errors.New("索引在读取期间发生变化")
 
+// targetedExcerptLength 是定向取证时每个分块摘录的长度上限。定向取证（retrieve 指定 documentIds）
+// 通常是为了读全文档的相关段落，摘录按预算放宽，调用方不必逐行追查。
+const targetedExcerptLength = 2400
+
 func searchConfigSignature(config AppConfig) string {
 	raw, _ := json.Marshal(config)
 	return string(raw)
@@ -47,6 +52,8 @@ func searchConfigSignature(config AppConfig) string {
 type searchCandidateScope struct {
 	DocumentIDs       []string
 	ChunksPerDocument int
+	// ExcerptLength 是定向取证时每个分块的摘录长度；不超过默认长度时按默认处理。
+	ExcerptLength int
 }
 
 type documentIdentityGroup struct {
@@ -454,7 +461,9 @@ func lexicalRankBonus(rank float64) float64 {
 // scoreSearchCandidate 按概念权重累加字段强度：稀有概念命中在标题、路径或名称单元格时得分最高，
 // 只在正文顺带提到时得分较低。命中关键词本身计全额，命中同义词计一半，同一概念取两者中较强的一处，
 // 例如“产出”只在正文出现、而层级标题是“奖励数值”时按后者计。
-func scoreSearchCandidate(row LexicalCandidateRow, normalized normalizedCandidateFields, concepts []queryConcept, phrases []string, semanticScore float64) scoredCandidate {
+// declaredRerun 表示正文写明本文档是该活动的返场或复用稿（见 bodyDeclaredIdentityDocuments），
+// 身份强度与目录命中同级，不再只按正文顺带提到计分。
+func scoreSearchCandidate(row LexicalCandidateRow, normalized normalizedCandidateFields, concepts []queryConcept, phrases []string, semanticScore float64, declaredRerun bool) scoredCandidate {
 	matched := []string{}
 	table := row.SourceKind == "table"
 	strength := 0.0
@@ -462,6 +471,9 @@ func scoreSearchCandidate(row LexicalCandidateRow, normalized normalizedCandidat
 		value := 0.0
 		if concept.identity != nil {
 			value = identityMatchStrength(normalized, *concept.identity)
+			if declaredRerun {
+				value = math.Max(value, 0.6)
+			}
 		} else {
 			value = fieldMatchStrength(normalized, concept.primary, table)
 		}
@@ -634,14 +646,557 @@ func matchIdentityGroup(value string, group documentIdentityGroup) (float64, boo
 	return math.Max(2, 3.5-math.Min(1.5, float64(gap)/8)), joined[first]
 }
 
-// namedDocumentIdentityAtBoundary 判断标题或路径中是否有以独立名称出现的活动身份。
-func namedDocumentIdentityAtBoundary(title, relativePath string, groups []documentIdentityGroup) bool {
-	for _, group := range groups {
-		if identityGroupAtBoundary(title, group) || identityGroupAtBoundary(relativePath, group) {
+// identitySpans 返回 value 中以独立名称出现的活动名（紧凑形式，从实体名到其后第一个编号），
+// 如“晨星·守望者888活动”得到“晨星守望者888”。
+func identitySpans(value string, group documentIdentityGroup) []string {
+	identity, joined := compactIdentityJoins(value)
+	entity, numeric := group.Terms[0], group.Terms[len(group.Terms)-1]
+	spans := []string{}
+	for offset := 0; offset < len(identity); {
+		index := strings.Index(identity[offset:], entity)
+		if index < 0 {
+			break
+		}
+		index += offset
+		offset = index + len(entity)
+		if joined[index] {
+			continue
+		}
+		if end := strings.Index(identity[offset:], numeric); end >= 0 {
+			spans = append(spans, identity[index:offset+end+len(numeric)])
+		}
+	}
+	return spans
+}
+
+// namesStandalone 判断 value 中是否以独立名称写出 name（紧凑形式，前面不紧跟汉字），不要求编号。
+func namesStandalone(value, name string) bool {
+	identity, joined := compactIdentityJoins(value)
+	for offset := 0; offset < len(identity); {
+		index := strings.Index(identity[offset:], name)
+		if index < 0 {
+			return false
+		}
+		if !joined[offset+index] {
+			return true
+		}
+		offset += index + len(name)
+	}
+	return false
+}
+
+// normalizedSpanText 是逐行规范化、保留换行的原文，以及去掉空白和标点的紧凑形式中每个字符在原文里的位置。
+type normalizedSpanText struct {
+	runes     []rune
+	compact   []rune
+	positions []int
+}
+
+func newNormalizedSpanText(value string) normalizedSpanText {
+	lines := []string{}
+	for _, line := range strings.Split(value, "\n") {
+		if line = NormalizeText(line); line != "" {
+			lines = append(lines, line)
+		}
+	}
+	text := normalizedSpanText{runes: []rune(strings.Join(lines, "\n"))}
+	for index, r := range text.runes {
+		if isCJK(r) || unicode.IsLetter(r) || unicode.IsNumber(r) {
+			text.compact = append(text.compact, r)
+			text.positions = append(text.positions, index)
+		}
+	}
+	return text
+}
+
+// occurrences 返回紧凑形式的活动名 span 每次出现时在原文中的首尾字符位置。
+// 正文里活动名常紧跟在“为”“复用”等字后面，这里不像标题那样区分独立名称与嵌在更长名称里的写法。
+func (text normalizedSpanText) occurrences(span string) [][2]int {
+	target := []rune(span)
+	result := [][2]int{}
+	if len(target) == 0 {
+		return result
+	}
+	for start := 0; start+len(target) <= len(text.compact); start++ {
+		if text.compact[start] == target[0] && slices.Equal(text.compact[start:start+len(target)], target) {
+			result = append(result, [2]int{text.positions[start], text.positions[start+len(target)-1]})
+		}
+	}
+	return result
+}
+
+// context 返回原文第 first 到 last 个字符所在的片段，前后各留 radius 个字符，供调用方核对。
+func (text normalizedSpanText) context(first, last, radius int) string {
+	runes := text.runes
+	from, to := max(0, first-radius), min(len(runes), last+1+radius)
+	lead, tail := from > 0, to < len(runes)
+	// 配表行以“列=值”和“ | ”分隔单元格，只保留活动名所在的单元格与行。
+	for index := first - 1; index >= from; index-- {
+		if runes[index] == '=' || runes[index] == '|' || runes[index] == '\n' {
+			from, lead = index+1, false
+			break
+		}
+	}
+	for index := last + 1; index < to; index++ {
+		if runes[index] == '|' || runes[index] == '\n' {
+			to, tail = index, false
+			break
+		}
+	}
+	excerpt := strings.TrimSpace(string(runes[from:to]))
+	if lead {
+		excerpt = "…" + excerpt
+	}
+	if tail {
+		excerpt += "…"
+	}
+	return excerpt
+}
+
+// bodyIdentityMatch 记录按正文归入活动身份的文档：正文里的完整活动名、标题或目录写出同一活动名的身份文档标题，
+// 以及正文是否直接写明本文档是该活动的返场或复用稿（declared）和该处的原文片段。
+type bodyIdentityMatch struct {
+	name       string
+	context    string
+	ownerTitle string
+	declared   bool
+}
+
+var (
+	// rerunMarkers 是写明返场、复用关系的词。
+	rerunMarkers = []string{"返场", "复刻", "复用", "重开"}
+	// rerunSubjects 是正文指代本文档活动的主语，rerunConnectors 是主语与活动名或关系词之间允许的系词。
+	rerunSubjects   = []string{"本次活动", "本活动", "本次", "本期", "此次", "这次", "本版本"}
+	rerunConnectors = []string{"作为", "为", "是", ""}
+	// rerunLeadBoundaries 是行、单元格、句子或列表项的起点。冒号不算：“玩法参考：××888活动返场方案”是在引用别的文档。
+	rerunLeadBoundaries = "\n|=·•●*-#。；;！!？?、.)）]】"
+	// rerunClauseBoundaries 是分句的硬边界，用来截取活动名所在的分句、检查其中有没有引用词。
+	rerunClauseBoundaries = "\n|=。；;！!？?"
+	rerunReferenceWords   = []string{"参考", "参照", "借鉴", "类似", "对标", "仿照", "对照"}
+	// rerunClauseEnds 是分句结束处（含逗号），用来截取活动名所在的分句检查疑问语气。
+	rerunClauseEnds = "\n|。；;！!？?，,"
+	// rerunTagQuestions 是跟在陈述后面、把整句变成疑问的附加问句，如“……返场，对吗？”。
+	rerunTagQuestions = []string{"对吗", "是吗", "对不对", "是不是", "对么", "是么", "对吧", "是吧"}
+	// rerunRowLine 是配表行的“行 N |”开头，rerunCellPrefix 是单元格的列名前缀（规范化后为小写，可带表头，如“a[栏目]=”）。
+	rerunRowLine    = regexp.MustCompile(`^行 \d+ \|`)
+	rerunCellPrefix = regexp.MustCompile(`^([a-z]+)(?:\[[^\]]*\])?=`)
+	// rerunSectionHeading 是小节标题的开头：Markdown 标题或“一、”式编号。
+	rerunSectionHeading = regexp.MustCompile(`^(?:#+|[一二三四五六七八九十]+[、.])`)
+	// rerunListMarkers 是清单条目的几种开头：符号、数字编号、括号编号、中文编号与 Markdown 标题；同一种开头的是同级条目。
+	rerunListMarkers = []*regexp.Regexp{
+		regexp.MustCompile(`^[·•●*\-]`),
+		regexp.MustCompile(`^\d+[.、)]`),
+		regexp.MustCompile(`^\(\d+\)`),
+		regexp.MustCompile(`^[一二三四五六七八九十]+[、.]`),
+		regexp.MustCompile(`^#+`),
+	}
+	// rerunShortHeading 是单独成行、可当作标题的短文字的最大字数；带句读的不算标题。
+	rerunShortHeading = 16
+	// rerunContextChunks 是判断返场声明时最多往前补看的同一小节文本块数。
+	rerunContextChunks = 3
+	// rerunDocumentNouns 紧跟在行首声明的关系词后时，写的是另一份文档（如“××888活动返场方案”），不是本文档的声明。
+	rerunDocumentNouns = []string{"方案", "策划", "文档", "案", "稿"}
+)
+
+// qualifiedRerunStatement 判断活动名所在的陈述是否只是引用、转述或提问：所在分句有“参考”等引用词、
+// 活动名处在所在行（或配表单元格）里未闭合的引号中、所在分句是疑问句（带“吗”、以问号结尾或后接“对吗”
+// 等附加问句），或所在行属于参考标题下的清单或小节（如“参考活动：”下的条目）。这类陈述说的不是本文档，
+// 不能作为返场声明。
+func qualifiedRerunStatement(text normalizedSpanText, first, last int) bool {
+	runes := text.runes
+	start := first
+	for start > 0 && !strings.ContainsRune(rerunClauseBoundaries, runes[start-1]) {
+		start--
+	}
+	if rerunHasReference(string(runes[start:first])) {
+		return true
+	}
+	// 引号可能跨句：按所在行或配表单元格统计未闭合的引号。
+	cellStart := first
+	for cellStart > 0 && runes[cellStart-1] != '\n' && runes[cellStart-1] != '|' {
+		cellStart--
+	}
+	cell := string(runes[cellStart:first])
+	for _, quotes := range [][2]string{{"“", "”"}, {"「", "」"}, {"『", "』"}} {
+		if strings.Count(cell, quotes[0]) > strings.Count(cell, quotes[1]) {
 			return true
 		}
 	}
+	if strings.Count(cell, "\"")%2 == 1 {
+		return true
+	}
+	// 疑问只看活动名所在分句，“……返场，是否需要新增入口？”问的是别的事，不算。
+	end := last + 1
+	for end < len(runes) && !strings.ContainsRune(rerunClauseEnds, runes[end]) {
+		end++
+	}
+	if strings.Contains(string(runes[last+1:end]), "吗") || end < len(runes) && (runes[end] == '？' || runes[end] == '?') {
+		return true
+	}
+	if end < len(runes) && (runes[end] == '，' || runes[end] == ',') {
+		next := end + 1
+		for next < len(runes) && !strings.ContainsRune(rerunClauseEnds, runes[next]) {
+			next++
+		}
+		if next < len(runes) && (runes[next] == '？' || runes[next] == '?') && slices.Contains(rerunTagQuestions, strings.TrimSpace(string(runes[end+1:next]))) {
+			return true
+		}
+	}
+	// 参考清单或小节：活动名之前最近的标题决定它属于哪个清单或小节。参考标题说明只是引用；别的标题（如“本期改动：”）
+	// 说明活动名属于另一个清单或小节，不再受更上面的参考标题影响。先看同一行里活动名之前的单元格，再逐行往上。
+	lineStart := first
+	for lineStart > 0 && runes[lineStart-1] != '\n' {
+		lineStart--
+	}
+	own := rerunLineCells(string(runes[lineStart : last+1]))
+	kind := 0
+	if len(own) > 0 {
+		kind = rerunMarkerKind(own[len(own)-1].text)
+	}
+	// 同一行：紧挨着活动名所在单元格的标题后面直接写清单条目（如“本期改动： | ·××活动返场”）时，它是这一行的标题；
+	// “活动名： | ××活动返场”这类字段名不是标题，继续往前、往上找。
+	for index := len(own) - 2; index >= 0; index-- {
+		next := own[index+1].column == own[index].column+1 && (index < len(own)-2 || kind == 0)
+		if heading, reference := rerunHeading(own[index].text, false, next); heading {
+			return reference
+		}
+	}
+	// 往上逐行：清单条目、说明文字和字段行继续往上；与活动名同级的编号条目（如同以“1.”“2.”开头）是兄弟条目，
+	// 其中的非参考标题不截断。
+	for lineEnd := lineStart - 1; lineEnd > 0; {
+		lineHead := lineEnd
+		for lineHead > 0 && runes[lineHead-1] != '\n' {
+			lineHead--
+		}
+		cells := rerunLineCells(string(runes[lineHead:lineEnd]))
+		if found, reference := rerunLineHeading(cells); found && (reference || kind == 0 || rerunMarkerKind(cells[0].text) != kind) {
+			return reference
+		}
+		lineEnd = lineHead - 1
+	}
 	return false
+}
+
+// rerunHasReference 判断文字里有没有“参考”“借鉴”等引用词。
+func rerunHasReference(value string) bool {
+	return slices.ContainsFunc(rerunReferenceWords, func(word string) bool { return strings.Contains(value, word) })
+}
+
+// rerunColonEnded 判断单元格是否以冒号结尾，即引出下面内容的标题。
+func rerunColonEnded(cell string) bool {
+	return strings.HasSuffix(cell, "：") || strings.HasSuffix(cell, ":")
+}
+
+// rerunMarkerKind 返回条目开头的种类（0 表示不是条目）；同种开头的条目是同一清单的同级条目。
+func rerunMarkerKind(cell string) int {
+	for index, marker := range rerunListMarkers {
+		if marker.MatchString(cell) {
+			return index + 1
+		}
+	}
+	return 0
+}
+
+// rerunSelfSubject 判断单元格（去掉条目开头后）是否以“本期”“本次”等指代本文档的主语开头，如“本期改动：”。
+func rerunSelfSubject(cell string) bool {
+	if marker := rerunMarkerKind(cell); marker > 0 {
+		cell = strings.TrimSpace(cell[rerunListMarkers[marker-1].FindStringIndex(cell)[1]:])
+	}
+	return slices.ContainsFunc(rerunSubjects, func(subject string) bool { return strings.HasPrefix(cell, subject) })
+}
+
+// rerunHeading 判断单元格是不是清单或小节的标题，以及是不是参考、借鉴一类的标题：
+//   - “三、”或 Markdown 小节标题；
+//   - 以冒号结尾：带引用词（如“参考活动：”“1.参考活动：”）、以“本期”“本次”等主语开头（如“本期改动：”），或
+//     同一行紧挨着的下一列没有内容（next 为 false：内容写在下面几行，或旁边只有备注列）；“活动名： | ××”这类
+//     下一列紧跟内容的是字段名，不是标题；
+//   - 单独成行（alone）、不带句读的短文字：带引用词（如“参考活动”）或以“本期”等主语开头（如“本期内容”）。
+func rerunHeading(cell string, alone, next bool) (heading, reference bool) {
+	reference = rerunHasReference(cell)
+	switch {
+	case rerunSectionHeading.MatchString(cell):
+		return true, reference
+	case rerunColonEnded(cell):
+		return reference || rerunSelfSubject(cell) || !next, reference
+	case alone && utf8.RuneCountInString(cell) <= rerunShortHeading && !strings.ContainsAny(cell, "。，,；;！!？?"):
+		return reference || rerunSelfSubject(cell), reference
+	}
+	return false, false
+}
+
+// rerunLineHeading 从后往前找一行里离下文最近的标题单元格，返回是否找到以及它是不是参考标题。
+func rerunLineHeading(cells []rerunCell) (found, reference bool) {
+	for index := len(cells) - 1; index >= 0; index-- {
+		next := index+1 < len(cells) && cells[index+1].column == cells[index].column+1
+		if heading, reference := rerunHeading(cells[index].text, len(cells) == 1, next); heading {
+			return true, reference
+		}
+	}
+	return false, false
+}
+
+// rerunReferenceSection 判断文本块所在的小节（标题路径最后一级）是不是参考标题，如“参考活动”“参考表”。
+func rerunReferenceSection(headingPathJSON string) bool {
+	var path []string
+	if json.Unmarshal([]byte(headingPathJSON), &path) != nil || len(path) == 0 {
+		return false
+	}
+	found, reference := rerunLineHeading(rerunLineCells(NormalizeText(path[len(path)-1])))
+	return found && reference
+}
+
+// rerunCell 是一行里的一个非空单元格正文与列序号：配表按列字母（去掉“行 N”与列名前缀），Markdown、Word 表格按
+// “|”分隔的位置（空单元格占位），普通文本整行是一个单元格。
+type rerunCell struct {
+	text   string
+	column int
+}
+
+func rerunLineCells(line string) []rerunCell {
+	parts := []string{line}
+	spreadsheet := rerunRowLine.MatchString(strings.TrimSpace(line))
+	if spreadsheet {
+		parts = strings.Split(line, "|")[1:]
+	} else if strings.Contains(line, "|") {
+		parts = strings.Split(line, "|")
+	}
+	cells := []rerunCell{}
+	for index, part := range parts {
+		part = strings.TrimSpace(part)
+		column := index
+		if prefix := rerunCellPrefix.FindStringSubmatchIndex(part); prefix != nil {
+			if spreadsheet {
+				column = 0
+				for _, letter := range part[prefix[2]:prefix[3]] {
+					column = column*26 + int(letter-'a') + 1
+				}
+			}
+			part = strings.TrimSpace(part[prefix[1]:])
+		}
+		if part != "" {
+			cells = append(cells, rerunCell{text: part, column: column})
+		}
+	}
+	return cells
+}
+
+// titleDeclaresRerun 判断标题是否写明本文档是返场或复用稿；“非返场”“不是复用”“不复用”等否定写法不算。
+func titleDeclaresRerun(title string) bool {
+	for _, marker := range rerunMarkers {
+		for rest := title; ; {
+			index := strings.Index(rest, marker)
+			if index < 0 {
+				break
+			}
+			if before := rest[:index]; !strings.HasSuffix(before, "非") && !strings.HasSuffix(before, "不是") && !strings.HasSuffix(before, "不") {
+				return true
+			}
+			rest = rest[index+len(marker):]
+		}
+	}
+	return false
+}
+
+// declaredRerunContext 判断正文是否明确声明本文档就是活动 span 的返场或复用稿，满足时返回该处的原文片段。
+// 只认两种写法；引用、参考、否定、嵌在更长名称里或说不清主语的写法一律不算，文档仍保留为普通候选：
+//   - 行首声明：行、单元格、句子或列表项以活动名开头，后接“返场”“复刻”“复用”“重开”（中间只允许“活动”“的”），
+//     如“·晨星守望者888活动返场相关调整”；关系词后不能紧跟“方案”“策划”等文档名词。
+//   - 主语陈述：以“本次”“本期”“本活动”等指代本文档的主语直接陈述，如“本次为晨星守望者888活动返场”
+//     “本期复用晨星守望者888活动的玩法”；主语、系词、关系词与活动名必须紧挨，“本次不复用……”不算。
+//
+// 两种写法都要求活动名前是边界或主语，因此“破晨星守望者888”这类更长名称里的子串不会被当成目标活动；
+// 两种写法还都要排除引用、引号、疑问与参考清单（qualifiedRerunStatement）。
+func declaredRerunContext(text normalizedSpanText, span string, radius int) (string, bool) {
+	for _, occurrence := range text.occurrences(span) {
+		first, last := occurrence[0], occurrence[1]
+		before := strings.TrimRight(string(text.runes[max(0, first-64):first]), " ")
+		rest := strings.TrimLeft(string(text.runes[last+1:min(len(text.runes), last+17)]), " ")
+		rest = strings.TrimPrefix(strings.TrimLeft(strings.TrimPrefix(rest, "活动"), " "), "的")
+		declared := false
+		for _, marker := range rerunMarkers {
+			for _, subject := range rerunSubjects {
+				for _, connector := range rerunConnectors {
+					// 主语陈述：“本期复用晨星守望者888活动”或“本次为晨星守望者888活动返场”。
+					declared = declared || strings.HasSuffix(before, subject+connector+marker) ||
+						strings.HasPrefix(rest, marker) && strings.HasSuffix(before, subject+connector)
+				}
+			}
+			if !strings.HasPrefix(rest, marker) || declared {
+				continue
+			}
+			// 行首声明：活动名前是行、单元格、句子或列表项的起点，关系词后不是文档名词。
+			boundary, _ := utf8.DecodeLastRuneInString(before)
+			tail := strings.TrimPrefix(rest, marker)
+			declared = (first == 0 || strings.ContainsRune(rerunLeadBoundaries, boundary)) &&
+				!slices.ContainsFunc(rerunDocumentNouns, func(noun string) bool { return strings.HasPrefix(tail, noun) })
+		}
+		if declared && !qualifiedRerunStatement(text, first, last) {
+			return text.context(first, last, radius), true
+		}
+	}
+	return "", false
+}
+
+// bodyDeclaredIdentityDocuments 找出标题写出活动名中编号之前的部分、正文写出某份身份文档完整活动名的文档。
+// 返场、复用稿常在标题里省略编号，如《晨星守望者限时返场》只在正文写“晨星守望者888活动返场”。
+// 正文里的活动名必须与身份文档标题或目录中的活动名完全一致，避免“晨星推送礼包888”这类档位数字误入；
+// 标题还须写出编号之前的完整名称（如“晨星守望者”），只写实体名、正文引用该活动的新活动（如《晨星新活动》
+// 正文写“参考晨星守望者888活动”）不算。满足这两条的文档进入身份门槛，作为普通候选排序；
+// 只有正文明确声明本文档就是该活动的返场或复用稿（declaredRerunContext），且标题也写明返场或复用
+// （titleDeclaresRerun），才标为 declared，获得返场稿的名额与提示；只满足其一的文档仍是普通候选。
+// 标题写“复刻”不够：《晨星守望者周年庆复刻》可能复刻的是周年庆，正文只是参考了 888 活动。
+// preceding 返回候选文本块之前同一小节的文本块（可为 nil），用来补全从清单中间开始的文本块的上下文。
+// 这是基于标题与正文的推断，调用方仍应核对原文。
+func bodyDeclaredIdentityDocuments(rows []LexicalCandidateRow, identityIDs map[string]bool, groups []documentIdentityGroup, preceding func(LexicalCandidateRow) []string) map[string]bodyIdentityMatch {
+	result := map[string]bodyIdentityMatch{}
+	for _, group := range groups {
+		// 活动名对应的身份文档：标题写出的优先于只在目录写出的，同类取最新。
+		owners, pathOwners := map[string]*LexicalCandidateRow{}, map[string]*LexicalCandidateRow{}
+		for index := range rows {
+			row := &rows[index]
+			if !identityIDs[row.ID] {
+				continue
+			}
+			for _, span := range identitySpans(row.Title, group) {
+				if newerIdentityExample(row, owners[span]) {
+					owners[span] = row
+				}
+			}
+			for _, span := range identitySpans(row.RelativePath, group) {
+				if newerIdentityExample(row, pathOwners[span]) {
+					pathOwners[span] = row
+				}
+			}
+		}
+		for span, row := range pathOwners {
+			if owners[span] == nil {
+				owners[span] = row
+			}
+		}
+		if len(owners) == 0 {
+			continue
+		}
+		spans := make([]string, 0, len(owners))
+		for span := range owners {
+			spans = append(spans, span)
+		}
+		sort.Strings(spans)
+		for _, row := range rows {
+			if existing, done := result[row.ID]; done && existing.declared || identityIDs[row.ID] || !namesStandalone(row.Title, group.Terms[0]) {
+				continue
+			}
+			text := normalizedSpanText{}
+			for _, span := range spans {
+				if !namesStandalone(row.Title, strings.TrimSuffix(span, group.Terms[len(group.Terms)-1])) {
+					continue
+				}
+				if text.runes == nil {
+					text = newNormalizedSpanText(row.Text)
+				}
+				if len(text.occurrences(span)) == 0 {
+					continue
+				}
+				match := bodyIdentityMatch{name: span, ownerTitle: owners[span].Title}
+				match.context, match.declared = declaredRerunContext(text, span, 16)
+				// 返场名额还要求标题也写明返场或复用：正文措辞再复杂，标题与正文同时声明才可靠；
+				// 文本块所在小节本身是参考小节（如“参考活动”）时，其中的陈述都不算。
+				match.declared = match.declared && titleDeclaresRerun(row.Title) && !rerunReferenceSection(row.HeadingPathJSON)
+				// 文本块可能从清单中间开始（Markdown 按空行分段、Word 表格与前面的说明段分开、长配表分块）：
+				// 带上同一小节紧挨着的前几个文本块再判断一次，参考标题落在前一个文本块里也能找到。
+				if match.declared && row.Ordinal > 0 && preceding != nil {
+					if earlier := preceding(row); len(earlier) > 0 {
+						match.context, match.declared = declaredRerunContext(newNormalizedSpanText(strings.Join(append(earlier, row.Text), "\n")), span, 16)
+					}
+				}
+				if _, found := result[row.ID]; !found || match.declared {
+					result[row.ID] = match
+				}
+				if match.declared {
+					break
+				}
+			}
+		}
+	}
+	return result
+}
+
+// bodyIdentityNotes 附正文原文提示标题未写编号、正文写明返场或复用的文档可能属于哪个活动，每个活动名只列最新的一份。
+// 调用方只看标题时无法把这类返场、复用稿和原案联系起来，容易转而采用标题带“复用”的其他活动。
+func bodyIdentityNotes(rows []LexicalCandidateRow, matches map[string]bodyIdentityMatch) []string {
+	newest := map[string]*LexicalCandidateRow{}
+	names := []string{}
+	for index := range rows {
+		row := &rows[index]
+		match, ok := matches[row.ID]
+		if !ok || !match.declared {
+			continue
+		}
+		if newest[match.name] == nil {
+			names = append(names, match.name)
+		}
+		if newerIdentityExample(row, newest[match.name]) {
+			newest[match.name] = row
+		}
+	}
+	notes := make([]string, 0, len(names))
+	for _, name := range names {
+		row := newest[name]
+		match := matches[row.ID]
+		notes = append(notes, fmt.Sprintf("《%s》标题未写编号，正文写有“%s”，可能是《%s》所属活动的返场或复用稿，请核对原文后采用。", row.Title, match.context, match.ownerTitle))
+	}
+	return notes
+}
+
+// titleIdentityKind 判断标题是否命中活动身份，以及命中是否以独立名称出现。
+func titleIdentityKind(title string, groups []documentIdentityGroup) (matched, standalone bool) {
+	for _, group := range groups {
+		if identityGroupScore(title, group) > 0 {
+			matched = true
+			standalone = standalone || identityGroupAtBoundary(title, group)
+		}
+	}
+	return matched, standalone
+}
+
+// newerIdentityExample 比较两份候选作为提示示例的优先级：日期新者优先，同日期取标题较短者
+// （主策划通常不带“数组特效设计”这类附加说明），再按标题排序保证结果确定。
+func newerIdentityExample(candidate, current *LexicalCandidateRow) bool {
+	if current == nil || candidate.EffectiveUpdatedAtMS != current.EffectiveUpdatedAtMS {
+		return current == nil || candidate.EffectiveUpdatedAtMS > current.EffectiveUpdatedAtMS
+	}
+	candidateLength, currentLength := utf8.RuneCountInString(candidate.Title), utf8.RuneCountInString(current.Title)
+	if candidateLength != currentLength {
+		return candidateLength < currentLength
+	}
+	return candidate.Title < current.Title
+}
+
+// identityAmbiguityWarnings 在同一活动身份既以独立名称出现在标题中、又只出现在更长的标题名称里时给出提示，
+// 例如“晨星888”同时命中《晨星·守望者888活动》和《破晨星·裂空888活动》。两者可能是不同活动，
+// 按日期排序时更长名称的文档还可能排在前面，因此列出两类中最新的标题供调用方区分，并说明用户的写法按字面
+// 对应独立名称：默认以它为主回答，更长名称的活动作为另一种可能说明，与相关度排序一致。
+func identityAmbiguityWarnings(rows []LexicalCandidateRow, groups []documentIdentityGroup) []string {
+	warnings := []string{}
+	for _, group := range groups {
+		var standalone, embedded *LexicalCandidateRow
+		for index := range rows {
+			row := &rows[index]
+			if identityGroupScore(row.Title, group) <= 0 {
+				continue
+			}
+			if identityGroupAtBoundary(row.Title, group) {
+				if newerIdentityExample(row, standalone) {
+					standalone = row
+				}
+			} else if newerIdentityExample(row, embedded) {
+				embedded = row
+			}
+		}
+		if standalone != nil && embedded != nil {
+			warnings = append(warnings, fmt.Sprintf("“%s”按字面对应独立名称《%s》；更长的名称《%s》只是在名称内部包含它，可能是另一个活动。除非用户明确指的是后者，请以独立名称的活动为主回答，并说明另一种可能；原文未写明时不要推断两者之间的复用关系。", group.Phrase, standalone.Title, embedded.Title))
+		}
+	}
+	return warnings
 }
 
 func namedDocumentIdentityScore(title, relativePath string, groups []documentIdentityGroup) float64 {
@@ -1018,6 +1573,10 @@ func (engine *SearchEngine) search(ctx context.Context, request SearchRequest, s
 		}
 	}
 	documentRestricted := scope != nil
+	excerptLength := defaultExcerptLength
+	if documentRestricted {
+		excerptLength = max(defaultExcerptLength, min(targetedExcerptLength, scope.ExcerptLength))
+	}
 	exactRows := []LexicalCandidateRow{}
 	if documentRestricted {
 		rows, err := engine.database.DocumentCandidates(ctx, scope.DocumentIDs, expandedTerms, scope.ChunksPerDocument, filter)
@@ -1124,24 +1683,30 @@ func (engine *SearchEngine) search(ctx context.Context, request SearchRequest, s
 		return rows[i].ChunkID < rows[j].ChunkID
 	})
 	identityDocumentIDs := map[string]bool{}
+	bodyIdentityIDs, declaredRerunIDs := map[string]bool{}, map[string]bool{}
 	if !documentRestricted {
 		identityPriority := len(signals.IdentityGroups) > 0 && (!tableIntent || designOnly)
-		boundaryIDs := map[string]bool{}
 		for _, row := range rows {
 			if namedDocumentIdentityScore(row.Title, row.RelativePath, signals.IdentityGroups) > 0 {
 				identityDocumentIDs[row.ID] = true
-				if namedDocumentIdentityAtBoundary(row.Title, row.RelativePath, signals.IdentityGroups) {
-					boundaryIDs[row.ID] = true
-				}
 			}
 		}
-		// “晨星888”同时命中“晨星·守望者888”和“破晨星·裂空888”时，只保留实体名独立出现的文档；
-		// 配表意图下不按身份过滤，但同样排除只在更长名称里命中的文档。
-		if len(boundaryIDs) > 0 {
-			identityIDs := identityDocumentIDs
-			rows = filterCandidateRows(rows, func(row LexicalCandidateRow) bool { return !identityIDs[row.ID] || boundaryIDs[row.ID] })
-			identityDocumentIDs = boundaryIDs
+		bodyIdentity := bodyDeclaredIdentityDocuments(rows, identityDocumentIDs, signals.IdentityGroups, func(row LexicalCandidateRow) []string {
+			texts, err := engine.database.PrecedingSectionChunks(ctx, row.ID, row.Ordinal, row.HeadingPathJSON, rerunContextChunks)
+			if err != nil {
+				return nil
+			}
+			return texts
+		})
+		for id, match := range bodyIdentity {
+			identityDocumentIDs[id] = true
+			bodyIdentityIDs[id] = true
+			declaredRerunIDs[id] = match.declared
 		}
+		response.Warnings = append(response.Warnings, bodyIdentityNotes(rows, bodyIdentity)...)
+		// 实体名嵌在更长名称里的文档（如“晨星888”命中“破晨星·裂空888”）可能正是用户所指，也可能是另一个活动：
+		// 保留它们，只让相关度低于独立名称；两类同时出现时提示调用方按标题区分。
+		response.Warnings = append(response.Warnings, identityAmbiguityWarnings(rows, signals.IdentityGroups)...)
 		if identityPriority && len(identityDocumentIDs) > 0 {
 			rows = filterCandidateRows(rows, func(row LexicalCandidateRow) bool { return identityDocumentIDs[row.ID] })
 		} else if len(signals.IdentityGroups) > 0 && len(identityDocumentIDs) > 0 {
@@ -1221,7 +1786,7 @@ func (engine *SearchEngine) search(ctx context.Context, request SearchRequest, s
 	}
 	byDocument := map[string][]scoredCandidate{}
 	for _, row := range rows {
-		candidate := scoreSearchCandidate(row, normalizedFor(row), concepts, phrases, semanticScores[row.ChunkID])
+		candidate := scoreSearchCandidate(row, normalizedFor(row), concepts, phrases, semanticScores[row.ChunkID], declaredRerunIDs[row.ID])
 		byDocument[row.ID] = append(byDocument[row.ID], candidate)
 	}
 	revision := snapshotRevision
@@ -1237,7 +1802,7 @@ func (engine *SearchEngine) search(ctx context.Context, request SearchRequest, s
 			sectionTypes = appendUnique(sectionTypes, candidate.row.SectionType)
 		}
 		for _, candidate := range candidates[:min(excerptLimit, len(candidates))] {
-			projection, err := MakeExcerpt(candidate.row.Text, candidate.row.Locator, projectionTerms, 520)
+			projection, err := MakeExcerpt(candidate.row.Text, candidate.row.Locator, projectionTerms, excerptLength)
 			if err != nil {
 				return response, err
 			}
@@ -1251,7 +1816,7 @@ func (engine *SearchEngine) search(ctx context.Context, request SearchRequest, s
 		for _, candidate := range candidates {
 			relevance = math.Max(relevance, candidate.score)
 		}
-		hits = append(hits, SearchHit{DocumentID: best.row.ID, SourceID: best.row.SourceID, SourceLabel: best.row.SourceLabel, SourceKind: best.row.SourceKind, Title: best.row.Title, AbsolutePath: best.row.AbsolutePath, RelativePath: best.row.RelativePath, Extension: best.row.Extension, EffectiveUpdatedAt: best.row.EffectiveUpdatedAt, DateSource: best.row.DateSource, FilesystemModifiedAt: best.row.FilesystemModifiedAt, Relevance: relevance, FamilyKey: best.row.FamilyKey, FamilyConfidence: best.row.FamilyConfidence, Stale: best.row.Stale, SectionTypes: sectionTypes, Excerpts: excerpts})
+		hits = append(hits, SearchHit{DocumentID: best.row.ID, SourceID: best.row.SourceID, SourceLabel: best.row.SourceLabel, SourceKind: best.row.SourceKind, Title: best.row.Title, AbsolutePath: best.row.AbsolutePath, RelativePath: best.row.RelativePath, Extension: best.row.Extension, EffectiveUpdatedAt: best.row.EffectiveUpdatedAt, DateSource: best.row.DateSource, FilesystemModifiedAt: best.row.FilesystemModifiedAt, Relevance: relevance, FamilyKey: best.row.FamilyKey, FamilyConfidence: best.row.FamilyConfidence, Stale: best.row.Stale, SectionTypes: sectionTypes, Excerpts: excerpts, bodyIdentity: bodyIdentityIDs[best.row.ID], declaredRerun: declaredRerunIDs[best.row.ID]})
 	}
 	if !documentRestricted && (len(primaryConcept) > 0 || len(signals.ExplicitAnchors) > 0) {
 		hits = filterHits(hits, func(hit SearchHit) bool {
@@ -1475,13 +2040,23 @@ func (engine *SearchEngine) retrieve(ctx context.Context, request RetrievalReque
 	}
 	var candidateScope *searchCandidateScope
 	if len(selectedDocumentIDs) > 0 {
-		candidateScope = &searchCandidateScope{DocumentIDs: selectedDocumentIDs, ChunksPerDocument: max(12, maxChunks*3)}
+		candidateScope = &searchCandidateScope{DocumentIDs: selectedDocumentIDs, ChunksPerDocument: max(12, maxChunks*3), ExcerptLength: maxChars / (len(selectedDocumentIDs) * maxChunks)}
 	}
 	baseRequest := copySearchRequest(request)
+	// 同时选了策划与配表等同于不限来源类型：仍分别检索两类来源，保留活动身份必选与配表配额。
+	if len(baseRequest.SourceIDs) == 0 && containsString(baseRequest.SourceKinds, "design") && containsString(baseRequest.SourceKinds, "table") {
+		baseRequest.SourceKinds = nil
+	}
 	var search SearchResponse
 	if len(baseRequest.SourceIDs) == 0 && len(baseRequest.SourceKinds) == 0 {
 		// 每类来源多取候选，按相关度补位时才能看到较早但更相关的文档。
 		perSourceLimit := max(maxDocuments*3, baseRequest.Limit)
+		signals := QueryAnchorSignals(baseRequest.Query)
+		if len(signals.IdentityGroups) > 0 {
+			// 活动身份问题要在候选里找到独立名称的原案；证据包很小时只取几个候选，
+			// 较新的返场稿和名称更长的同编号活动会把较早的原案挤出候选。
+			perSourceLimit = max(perSourceLimit, 12)
+		}
 		designRequest, tableRequest := baseRequest, baseRequest
 		designRequest.SourceKinds, designRequest.Limit = []string{"design"}, perSourceLimit
 		tableRequest.SourceKinds, tableRequest.Limit = []string{"table"}, perSourceLimit
@@ -1497,7 +2072,6 @@ func (engine *SearchEngine) retrieve(ctx context.Context, request RetrievalReque
 			return RetrievalBundle{}, errIndexChangedDuringRead
 		}
 		tableFirst := tableIntentPattern.MatchString(baseRequest.Query)
-		signals := QueryAnchorSignals(baseRequest.Query)
 		rank := documentRankContext{Query: baseRequest.Query, Terms: uniqueNormalizedTerms(ExpandQueryTerms(baseRequest.Query, config.Search.SynonymExpansion)), Signals: signals}
 		primary, secondary := designSearch.Hits, tableSearch.Hits
 		if tableFirst {
@@ -1507,7 +2081,7 @@ func (engine *SearchEngine) retrieve(ctx context.Context, request RetrievalReque
 		if restrictIdentity {
 			identityIDs := map[string]bool{}
 			for _, hit := range append(append([]SearchHit{}, primary...), secondary...) {
-				if matchesIdentitySignals(hit.Title, hit.RelativePath, signals) {
+				if hit.bodyIdentity || matchesIdentitySignals(hit.Title, hit.RelativePath, signals) {
 					identityIDs[hit.DocumentID] = true
 				}
 			}
@@ -1536,8 +2110,9 @@ func (engine *SearchEngine) retrieve(ctx context.Context, request RetrievalReque
 		allCandidates := append(append([]SearchHit{}, primary...), secondary...)
 		fillCandidates := append(append([]SearchHit{}, primaryByRelevance...), secondaryByRelevance...)
 		requiredHits := []SearchHit{}
-		if tableFirst && len(signals.IdentityGroups) > 0 {
-			// 优先标题命中活动身份的策划，再退到只有目录命中的文档（如同名目录下的剧情稿）。
+		if len(signals.IdentityGroups) > 0 {
+			// 活动身份问题把标题以独立名称命中的策划列为必选：按日期排序时，名称更长、更新的同编号活动
+			// 不会把它挤出证据包。没有标题命中时退到只有目录命中的文档（如同名目录下的剧情稿）。
 			var titleMatch, pathMatch *SearchHit
 			bestTitleScore := 0.0
 			for index := range designSearch.Hits {
@@ -1551,11 +2126,45 @@ func (engine *SearchEngine) retrieve(ctx context.Context, request RetrievalReque
 			}
 			if titleMatch != nil {
 				requiredHits = append(requiredHits, *titleMatch)
+				// 策划名额够时再依次带上两类文档中最新的一份：同一活动标题省略编号的返场、复用稿（正文写明完整活动名），
+				// 以及名称更长的同编号活动（覆盖另一种理解，区别由 warnings 中的歧义提示说明）。
+				// 名额按策划计算，以免在配表优先的小证据包里挤掉配表；配表不足配额时，空出的名额归策划。
+				// 活动身份问题的配置清单主要写在策划里，配表优先时策划仍至少占 3 个名额（不超过总数一半）。
+				designSlots := maxDocuments
+				if tableFirst {
+					designSlots = max(maxDocuments-min(primaryQuota, len(primary)), min(3, maxDocuments/2))
+				}
+				_, standaloneTitle := titleIdentityKind(titleMatch.Title, signals.IdentityGroups)
+				extras := []func(SearchHit) bool{
+					func(hit SearchHit) bool { return hit.declaredRerun },
+					func(hit SearchHit) bool {
+						matched, standalone := titleIdentityKind(hit.Title, signals.IdentityGroups)
+						return standaloneTitle && matched && !standalone
+					},
+				}
+				for _, wanted := range extras {
+					for index := range designSearch.Hits {
+						if len(requiredHits) < designSlots && wanted(designSearch.Hits[index]) {
+							requiredHits = append(requiredHits, designSearch.Hits[index])
+							break
+						}
+					}
+				}
 			} else if pathMatch != nil {
 				requiredHits = append(requiredHits, *pathMatch)
 			}
 		}
+		identityNumbers := map[string]bool{}
+		if len(requiredHits) > 0 {
+			for _, group := range signals.IdentityGroups {
+				identityNumbers[group.Terms[len(group.Terms)-1]] = true
+			}
+		}
 		for _, anchor := range signals.DocumentAnchors {
+			// 活动身份里的编号（如“晨星888”的 888）已由上面的身份必选覆盖，不再按显式 ID 另选文档。
+			if identityNumbers[anchor] {
+				continue
+			}
 			// 显式 ID 优先选标题或路径就是该 ID 的文档，其次才是正文提到它的文档。
 			var chosen *SearchHit
 			for index := range allCandidates {

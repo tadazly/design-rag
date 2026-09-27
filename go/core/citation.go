@@ -215,10 +215,18 @@ type parsedSpreadsheetRow struct {
 	line   string
 }
 
+// defaultExcerptLength 是检索摘录的默认长度；桌面 TypeScript 引擎使用同样的默认值，两端投影须一致。
+const defaultExcerptLength = 520
+
+// maxProjectedColumns 是表格投影的列数上限，Go 与 TypeScript 的引用回读都按此校验。
+const maxProjectedColumns = 12
+
 func MakeExcerpt(text, locator string, terms []string, maxLength int) (ExcerptProjection, error) {
 	if maxLength <= 0 {
-		maxLength = 520
+		maxLength = defaultExcerptLength
 	}
+	// 长度预算超过默认值（定向取证）时在默认摘录的基础上放宽表格窗口，见下方表格投影。
+	expanded := maxLength > defaultExcerptLength
 	locatorMatch := searchSpreadsheetLocator.FindStringSubmatch(locator)
 	lines := []string{}
 	for _, line := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
@@ -268,7 +276,8 @@ func MakeExcerpt(text, locator string, terms []string, maxLength int) (ExcerptPr
 		if center < 0 {
 			center = 0
 		}
-		selectedRows := append([]parsedSpreadsheetRow(nil), filteredRows[max(0, center-2):min(len(filteredRows), center+3)]...)
+		low, high := max(0, center-2), min(len(filteredRows), center+3)
+		selectedRows := append([]parsedSpreadsheetRow(nil), filteredRows[low:high]...)
 		headerSegments := splitPipe(strings.TrimPrefix(header, "字段 |"))
 		rowSegments := make([][]string, len(selectedRows))
 		for index, row := range selectedRows {
@@ -332,32 +341,91 @@ func MakeExcerpt(text, locator string, terms []string, maxLength int) (ExcerptPr
 			if len(relevant) == 0 || relevant[column] {
 				selectedColumns = append(selectedColumns, column)
 			}
-			if len(selectedColumns) >= 12 {
+			if len(selectedColumns) >= maxProjectedColumns {
 				break
 			}
 		}
-		columnSet := map[string]bool{}
-		for _, column := range selectedColumns {
-			columnSet[column] = true
-		}
-		projectedHeader := make([]string, len(selectedColumns))
-		for index, column := range selectedColumns {
-			projectedHeader[index] = headerByColumn[column]
-			if projectedHeader[index] == "" {
-				projectedHeader[index] = column + "=未命名字段"
+		// projection 按引用回读（renderSpreadsheetCitationScope）的格式投影 filteredRows[low:high] 的指定列。
+		projection := func(low, high int, columns []string) (string, string, map[string]bool) {
+			columnSet := map[string]bool{}
+			projectedHeader := make([]string, len(columns))
+			for index, column := range columns {
+				columnSet[column] = true
+				projectedHeader[index] = headerByColumn[column]
+				if projectedHeader[index] == "" {
+					projectedHeader[index] = column + "=未命名字段"
+				}
 			}
+			headerLine := "字段映射（投影） | " + strings.Join(projectedHeader, " | ")
+			lines := []string{headerLine}
+			for _, row := range filteredRows[low:high] {
+				lines = append(lines, projectedSpreadsheetRow(row, columnSet))
+			}
+			return strings.Join(lines, "\n"), headerLine, columnSet
 		}
-		headerLine := "字段映射（投影） | " + strings.Join(projectedHeader, " | ")
-		projectedRows := make([]string, len(selectedRows))
-		for index, row := range selectedRows {
-			projectedRows[index] = fmt.Sprintf("行 %d | %s", row.number, strings.Join(filterSpreadsheetSegments(rowSegments[index], columnSet), " | "))
+		projectedText, headerLine, columnSet := projection(low, high, selectedColumns)
+		if expanded && utf16Length(projectedText) <= maxLength {
+			// 以默认摘录为保底放宽：先从默认窗口向两侧交替加行，再补列（先补扩大窗口里命中查询词的列，
+			// 再按列序补其余列，最多 12 列），每一步都按投影后的长度核算预算，加不下就不加。
+			// 默认摘录已有的行与列始终保留，调用方一次就能读到成段内容，如“配表实现”下连续列出的多张表。
+			used := utf16Length(projectedText)
+			for grew := true; grew; {
+				grew = false
+				if high < len(filteredRows) {
+					if length := utf16Length(projectedSpreadsheetRow(filteredRows[high], columnSet)) + 1; used+length <= maxLength {
+						used, high, grew = used+length, high+1, true
+					}
+				}
+				if low > 0 {
+					if length := utf16Length(projectedSpreadsheetRow(filteredRows[low-1], columnSet)) + 1; used+length <= maxLength {
+						used, low, grew = used+length, low-1, true
+					}
+				}
+			}
+			columns, matched := map[string]bool{}, map[string]bool{}
+			candidateSegments := append([]string{}, headerSegments...)
+			for _, row := range filteredRows[low:high] {
+				candidateSegments = append(candidateSegments, splitPipe(row.cells)...)
+			}
+			for _, segment := range candidateSegments {
+				column := spreadsheetSegmentColumn(segment)
+				if column == "" || columnSet[column] || columnNumber(column) < baseStartColumn || columnNumber(column) > baseEndColumn {
+					continue
+				}
+				columns[column] = true
+				for _, term := range normalizedTerms {
+					if strings.Contains(NormalizeText(segment), term) {
+						matched[column] = true
+					}
+				}
+			}
+			extra := make([]string, 0, len(columns))
+			for column := range columns {
+				extra = append(extra, column)
+			}
+			sort.Slice(extra, func(i, j int) bool {
+				if matched[extra[i]] != matched[extra[j]] {
+					return matched[extra[i]]
+				}
+				return columnNumber(extra[i]) < columnNumber(extra[j])
+			})
+			for _, column := range extra {
+				if len(selectedColumns) >= maxProjectedColumns {
+					break
+				}
+				trial := append(append([]string{}, selectedColumns...), column)
+				sort.Slice(trial, func(i, j int) bool { return columnNumber(trial[i]) < columnNumber(trial[j]) })
+				if text, _, _ := projection(low, high, trial); utf16Length(text) <= maxLength {
+					selectedColumns = trial
+				}
+			}
+			projectedText, headerLine, columnSet = projection(low, high, selectedColumns)
+			selectedRows = append([]parsedSpreadsheetRow(nil), filteredRows[low:high]...)
 		}
-		projectedText := strings.Join(append([]string{headerLine}, projectedRows...), "\n")
 		var headerSlice, rowSlice *ExcerptSlice
 		if utf16Length(projectedText) > maxLength {
 			selectedRows = []parsedSpreadsheetRow{filteredRows[center]}
-			centerSegments := splitPipe(selectedRows[0].cells)
-			centerLine := fmt.Sprintf("行 %d | %s", selectedRows[0].number, strings.Join(filterSpreadsheetSegments(centerSegments, columnSet), " | "))
+			centerLine := projectedSpreadsheetRow(selectedRows[0], columnSet)
 			headerBudget := max(1, min(maxLength*35/100, maxLength-2))
 			clippedHeader, headerRange, err := excerptAroundTermsWithSlice(headerLine, normalizedTerms, headerBudget)
 			if err != nil {
@@ -390,6 +458,11 @@ func MakeExcerpt(text, locator string, terms []string, maxLength int) (ExcerptPr
 		}, nil
 	}
 	return genericExcerptProjection(text, locator, terms, maxLength)
+}
+
+// projectedSpreadsheetRow 按引用回读的格式投影一行：只保留 columns 中的列（以及不带列号的片段）。
+func projectedSpreadsheetRow(row parsedSpreadsheetRow, columns map[string]bool) string {
+	return fmt.Sprintf("行 %d | %s", row.number, strings.Join(filterSpreadsheetSegments(splitPipe(row.cells), columns), " | "))
 }
 
 func splitPipe(value string) []string {

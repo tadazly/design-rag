@@ -62,6 +62,10 @@ type SearchHit struct {
 	Stale                bool            `json:"stale"`
 	SectionTypes         []string        `json:"sectionTypes"`
 	Excerpts             []SearchExcerpt `json:"excerpts"`
+	// bodyIdentity 标记标题省略编号、由正文里的完整活动名归入活动身份的文档，declaredRerun 标记其中正文写明
+	// 本文档是该活动返场或复用稿的文档，只在 retrieve 内部使用。
+	bodyIdentity  bool
+	declaredRerun bool
 }
 
 type SearchRequest struct {
