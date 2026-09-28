@@ -44,6 +44,88 @@ var errIndexChangedDuringRead = errors.New("索引在读取期间发生变化")
 // 通常是为了读全文档的相关段落，摘录按预算放宽，调用方不必逐行追查。
 const targetedExcerptLength = 2400
 
+// targetedBreadthWeight 是定向取证挑选分块时正文覆盖广度的权重；targetedLockMargin 是直接入选的领先幅度。
+// 见 targetedExcerptOrder。
+const (
+	targetedBreadthWeight = 0.3
+	targetedLockMargin    = 0.03
+)
+
+// ownTextBreadth 返回分块正文本身写到的查询概念广度：命中的概念按权重累加（只命中同义词计一半），
+// 再减去其中最强的一项。正文只写到一个概念时为 0，同时写到多个概念时才大于 0。
+func ownTextBreadth(text string, concepts []queryConcept) float64 {
+	total, strongest := 0.0, 0.0
+	for _, concept := range concepts {
+		value := 0.0
+		switch {
+		case concept.identity != nil:
+			if strings.Contains(text, concept.identity.Terms[0]) && strings.Contains(text, concept.identity.Terms[1]) {
+				value = 1
+			}
+		case strings.Contains(text, concept.primary):
+			value = 1
+		default:
+			for _, alternate := range concept.alternates {
+				if strings.Contains(text, alternate) {
+					value = 0.5
+					break
+				}
+			}
+		}
+		total += concept.weight * value
+		strongest = math.Max(strongest, concept.weight*value)
+	}
+	return total - strongest
+}
+
+// targetedExcerptOrder 决定定向取证时一份文档内分块的入选顺序，candidates 须已按得分从高到低排列。
+// 小节标题命中查询词时，节内每个分块（包括只有几个字的段落）都按标题得到相同的分数，会占满分块名额；
+// 正文同时写到问题多个方面的分块只差一点分，反而读不到。因此：
+//   - 得分比第 limit 名高出 targetedLockMargin 以上的分块明显领先，按得分直接入选，不参与调整；
+//   - 其余分块按“得分 + 正文覆盖广度”竞争剩下的名额。文档标题或路径已写到的概念对每个分块都一样，
+//     正文再写到它不算覆盖了问题的另一个方面，不计入广度。
+//
+// 候选不超过 limit 个时全部入选，顺序不变。分块得分和文档相关度都不受入选顺序影响。
+func targetedExcerptOrder(candidates []scoredCandidate, limit int, concepts []queryConcept, fieldsOf func(LexicalCandidateRow) normalizedCandidateFields) []scoredCandidate {
+	if limit <= 0 || len(candidates) <= limit {
+		return candidates
+	}
+	boundary := candidates[limit-1].score
+	result, rest := []scoredCandidate{}, []scoredCandidate{}
+	for _, candidate := range candidates {
+		if candidate.score > boundary+targetedLockMargin {
+			result = append(result, candidate)
+		} else {
+			rest = append(rest, candidate)
+		}
+	}
+	document := fieldsOf(candidates[0].row)
+	breadthConcepts := make([]queryConcept, 0, len(concepts))
+	for _, concept := range concepts {
+		terms := []string{concept.primary}
+		if concept.identity != nil {
+			terms = concept.identity.Terms
+		}
+		named := true
+		for _, term := range terms {
+			named = named && (strings.Contains(document.title, term) || strings.Contains(document.relativePath, term))
+		}
+		if named {
+			concept.weight = 0
+		}
+		breadthConcepts = append(breadthConcepts, concept)
+	}
+	keys := make(map[string]float64, len(rest))
+	for _, candidate := range rest {
+		keys[candidate.row.ChunkID] = candidate.score + targetedBreadthWeight*ownTextBreadth(fieldsOf(candidate.row).text, breadthConcepts)
+	}
+	sort.SliceStable(rest, func(i, j int) bool {
+		left, right := keys[rest[i].row.ChunkID], keys[rest[j].row.ChunkID]
+		return left > right || left == right && rest[i].row.Ordinal < rest[j].row.Ordinal
+	})
+	return append(result, rest...)
+}
+
 func searchConfigSignature(config AppConfig) string {
 	raw, _ := json.Marshal(config)
 	return string(raw)
@@ -1801,7 +1883,11 @@ func (engine *SearchEngine) search(ctx context.Context, request SearchRequest, s
 		for _, candidate := range candidates {
 			sectionTypes = appendUnique(sectionTypes, candidate.row.SectionType)
 		}
-		for _, candidate := range candidates[:min(excerptLimit, len(candidates))] {
+		selected := candidates
+		if documentRestricted {
+			selected = targetedExcerptOrder(candidates, excerptLimit, concepts, normalizedFor)
+		}
+		for _, candidate := range selected[:min(excerptLimit, len(selected))] {
 			projection, err := MakeExcerpt(candidate.row.Text, candidate.row.Locator, projectionTerms, excerptLength)
 			if err != nil {
 				return response, err
