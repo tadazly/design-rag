@@ -1,0 +1,7 @@
+interface:
+  display_name: "插件真实 agent 评测"
+  short_description: "整理题库、独立出题、A/B 独立会话作答与盲评"
+  default_prompt: "检查评测题库，并说明下一轮 A/B 需要准备什么。"
+
+policy:
+  allow_implicit_invocation: true
