@@ -13,11 +13,11 @@ async function setupService(): Promise<KnowledgeBaseService> {
   await mkdir(sourceRoot, { recursive: true });
   const commonMtime = new Date("2026-08-04T00:00:00Z");
   const files = [
-    ["designer-a_【复用】幸运轮盘_精灵_20260819.md", "# 版本修改记录\n\n20260311 初版\n\n20260819 复用精灵奖励\n\n# 配置表明细\n\nturntable dropId activityExchange module 498"],
+    ["designer-a_【复用】幸运轮盘_精灵_20260819.md", "# 版本修改记录\n\n20260311 初版\n\n20260819 复用精灵奖励\n\n# 配置表明细\n\nturntable dropId tokenExchange module 498"],
     ["designer-a_【复用】幸运轮盘_精灵_20260805.md", "# 版本修改记录\n\n20260805 复用精灵和皮肤\n\n# 面板&逻辑\n\n入口、抽奖、奖励发放、结果展示"],
-    ["designer-a_暑期勋章兑好礼+转盘_20260819.md", "# 玩法规则\n\n充值送勋章并参与转盘，不属于幸运轮盘复用线。"],
+    ["designer-a_夏日星章兑好礼+转盘_20260819.md", "# 玩法规则\n\n充值送勋章并参与转盘，不属于幸运轮盘复用线。"],
     ["未来功能_20261231.md", "# 玩法规则\n\n这是一个普通抽奖活动配置。"],
-    ["环潮龙888活动_20260722.md", "# 玩法&逻辑\n\n四个大关，击败敌人产出活动货币并兑换奖励。"],
+    ["澜星龙888活动_20260722.md", "# 玩法&逻辑\n\n四个大关，击败敌人产出活动货币并兑换奖励。"],
   ] as const;
   for (const [name, content] of files) {
     const filePath = path.join(sourceRoot, name);
@@ -78,7 +78,7 @@ test("完整索引、中文检索、newest 排序、引用回读与增量零重�
     assert.equal(latestOnly.hits.filter((hit) => hit.familyKey.includes("幸运轮盘")).length, 1);
 
     const numericEntity = await service.search({ query: "找到最新 888 活动的玩法逻辑", sort: "newest", limit: 10 });
-    assert.equal(numericEntity.hits[0]?.title, "环潮龙888活动_20260722");
+    assert.equal(numericEntity.hits[0]?.title, "澜星龙888活动_20260722");
     assert(numericEntity.hits.every((hit) => /888/.test(`${hit.title} ${hit.excerpts.map((excerpt) => excerpt.text).join(" ")}`)));
 
     const bundle = await service.retrieve({ query: "轮盘配置和历史改动", maxChars: 4_000 });

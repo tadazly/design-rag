@@ -127,13 +127,13 @@ test("最新活动身份只由 title/path anchor 决定，更新更晚的表正�
   await Promise.all([mkdir(designRoot, { recursive: true }), mkdir(tableRoot, { recursive: true })]);
   await Promise.all([
     writeFile(
-      path.join(designRoot, "环潮龙888活动_20260101.md"),
-      "# 玩法\n\n环潮龙888活动的玩法和产出逻辑。",
+      path.join(designRoot, "澜星龙888活动_20260101.md"),
+      "# 玩法\n\n澜星龙888活动的玩法和产出逻辑。",
       "utf8",
     ),
     writeFile(
-      path.join(designRoot, "冰王888活动_20251201.md"),
-      "# 玩法\n\n冰王888活动的历史方案。",
+      path.join(designRoot, "霁王888活动_20251201.md"),
+      "# 玩法\n\n霁王888活动的历史方案。",
       "utf8",
     ),
     writeFile(
@@ -150,7 +150,7 @@ test("最新活动身份只由 title/path anchor 决定，更新更晚的表正�
   try {
     for (const query of ["找到最新的一个 888活动", "最近 888活动", "latest 888"]) {
       const search = await service.search({ query, sort: "newest", limit: 8 });
-      assert.equal(search.hits[0]?.title, "环潮龙888活动_20260101", `${query} 的 top1 必须是 title anchor 活动`);
+      assert.equal(search.hits[0]?.title, "澜星龙888活动_20260101", `${query} 的 top1 必须是 title anchor 活动`);
       assert(search.hits.every((hit) => `${hit.title}\n${hit.relativePath}`.includes("888")), `${query} 不得保留仅正文命中 888 的文档`);
       assert.deepEqual(
         search.hits.map((hit) => Date.parse(hit.effectiveUpdatedAt)),
@@ -165,7 +165,7 @@ test("最新活动身份只由 title/path anchor 决定，更新更晚的表正�
         maxChunksPerDocument: 2,
         maxChars: 24_000,
       });
-      assert.equal(bundle.search.hits[0]?.title, "环潮龙888活动_20260101", `${query} retrieve top1 必须保持活动身份`);
+      assert.equal(bundle.search.hits[0]?.title, "澜星龙888活动_20260101", `${query} retrieve top1 必须保持活动身份`);
       assert.equal(bundle.search.hits.some((hit) => hit.title === "rule_20260831"), false, `${query} retrieve 不得混回泛表正文命中`);
     }
 
@@ -186,31 +186,31 @@ test("中文命名活动优先 title/path 身份，同日期主案不受 chunk �
   await rm(root, { recursive: true, force: true });
   await Promise.all([mkdir(designRoot, { recursive: true }), mkdir(tableRoot, { recursive: true })]);
   const denseAuxiliary = Array.from({ length: 140 }, (_, index) =>
-    `## 玩法内容 ${index + 1}\n环潮龙888 产出逻辑、流程、步骤、交互和机制。`).join("\n");
+    `## 玩法内容 ${index + 1}\n澜星龙888 产出逻辑、流程、步骤、交互和机制。`).join("\n");
   await Promise.all([
     writeFile(
-      path.join(designRoot, "环潮龙888活动_20260722.md"),
-      "# 活动主案\n\n环潮龙888活动的主玩法与货币产出说明。",
+      path.join(designRoot, "澜星龙888活动_20260722.md"),
+      "# 活动主案\n\n澜星龙888活动的主玩法与货币产出说明。",
       "utf8",
     ),
     writeFile(
-      path.join(designRoot, "环潮龙888玩法内容设计_20260722.md"),
+      path.join(designRoot, "澜星龙888玩法内容设计_20260722.md"),
       `# 辅助玩法设计\n\n${denseAuxiliary}`,
       "utf8",
     ),
     writeFile(
-      path.join(designRoot, "【复用】环潮龙888累充_20260722.md"),
-      "# 累充辅助案\n\n环潮龙888累充档位配置。",
+      path.join(designRoot, "【复用】澜星龙888累充_20260722.md"),
+      "# 累充辅助案\n\n澜星龙888累充档位配置。",
       "utf8",
     ),
     writeFile(
       path.join(tableRoot, "errorCode_20260824.md"),
-      "# 提示语\n\n环潮龙888：配置不存在。这是错误码表，不是活动产出逻辑。",
+      "# 提示语\n\n澜星龙888：配置不存在。这是错误码表，不是活动产出逻辑。",
       "utf8",
     ),
     writeFile(
-      path.join(tableRoot, "activityTaskReset_20260827.md"),
-      "# 任务\n\nid=101888 冰王累充任务；后续正文提到环潮龙888活动任务。",
+      path.join(tableRoot, "questCycleReset_20260827.md"),
+      "# 任务\n\nid=101888 霁王累充任务；后续正文提到澜星龙888活动任务。",
       "utf8",
     ),
   ]);
@@ -221,14 +221,14 @@ test("中文命名活动优先 title/path 身份，同日期主案不受 chunk �
   ]);
   try {
     const named = await service.retrieve({
-      query: "环潮龙888 产出逻辑",
+      query: "澜星龙888 产出逻辑",
       sort: "newest",
       maxDocuments: 8,
       maxChunksPerDocument: 3,
       maxChars: 24_000,
     });
-    assert.equal(named.search.hits[0]?.title, "环潮龙888活动_20260722");
-    assert(named.search.hits.every((hit) => /环潮龙.*888/.test(`${hit.title}\n${hit.relativePath}`)));
+    assert.equal(named.search.hits[0]?.title, "澜星龙888活动_20260722");
+    assert(named.search.hits.every((hit) => /澜星龙.*888/.test(`${hit.title}\n${hit.relativePath}`)));
     assert.equal(named.search.hits.some((hit) => hit.sourceKind === "table"), false, "正文命中表不得进入非配表命名活动集合");
 
     const latest = await service.retrieve({
@@ -238,7 +238,7 @@ test("中文命名活动优先 title/path 身份，同日期主案不受 chunk �
       maxChunksPerDocument: 3,
       maxChars: 24_000,
     });
-    assert.equal(latest.search.hits[0]?.title, "环潮龙888活动_20260722", "同日期应先比较文档身份/角色，再比较 chunk relevance");
+    assert.equal(latest.search.hits[0]?.title, "澜星龙888活动_20260722", "同日期应先比较文档身份/角色，再比较 chunk relevance");
   } finally {
     service.close();
   }
@@ -252,24 +252,24 @@ test("documentIds 将检索限定在已选文档，多词查询不会静默丢�
   await Promise.all([
     writeFile(
       path.join(designRoot, "目标活动_20260831.md"),
-      "# 玩法产出\n\neventSummary 记录活动货币产出与兑换流程。",
+      "# 玩法产出\n\nquestSummary 记录活动货币产出与兑换流程。",
       "utf8",
     ),
     writeFile(
       path.join(designRoot, "全词干扰项_20260901.md"),
-      "# 配置\n\neventSummary dropUnit item statistic 玩法产出。",
+      "# 配置\n\nquestSummary dropUnit item statLog 玩法产出。",
       "utf8",
     ),
   ]);
 
   const service = await configuredService(root, [source("plans", designRoot, "design")]);
   try {
-    const selected = await service.search({ query: "目标活动 eventSummary", limit: 8 });
+    const selected = await service.search({ query: "目标活动 questSummary", limit: 8 });
     const documentId = selected.hits.find((hit) => hit.title === "目标活动_20260831")?.documentId;
     assert(documentId, "drag_search 应先返回可传给 drag_retrieve 的 documentId");
 
     const bundle = await service.retrieve({
-      query: "eventSummary dropUnit item statistic 玩法产出",
+      query: "questSummary dropUnit item statLog 玩法产出",
       documentIds: [documentId],
       maxDocuments: 1,
       maxChunksPerDocument: 3,
@@ -278,7 +278,7 @@ test("documentIds 将检索限定在已选文档，多词查询不会静默丢�
     assert.deepEqual(bundle.search.hits.map((hit) => hit.documentId), [documentId]);
     assert(bundle.evidence.length > 0, "documentIds 不得在全库检索后过滤成空 evidence");
     assert(bundle.evidence.every((item) => item.title === "目标活动_20260831"));
-    assert(bundle.evidence.some((item) => /eventSummary|玩法产出/.test(item.content)), "仍应选择文档内与 query 相关的片段");
+    assert(bundle.evidence.some((item) => /questSummary|玩法产出/.test(item.content)), "仍应选择文档内与 query 相关的片段");
   } finally {
     service.close();
   }

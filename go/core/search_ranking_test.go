@@ -50,13 +50,13 @@ func TestFieldMatchStrengthRanksTableStructureAboveBodyMentions(t *testing.T) {
 		want   float64
 	}{
 		{"title equals", normalizedCandidateFields{title: "扭蛋机"}, false, 1},
-		{"title contains", normalizedCandidateFields{title: "扭蛋机活动_20260819"}, false, 0.85},
+		{"title contains", normalizedCandidateFields{title: "扭蛋机活动_20260812"}, false, 0.85},
 		{"name column cell", normalizedCandidateFields{title: "pet", relativePath: `special\pet.xlsx`, text: header + " 行 2 | a=11 | b=扭蛋机"}, true, 0.85},
-		{"table system directory", normalizedCandidateFields{title: "alphalottery", relativePath: `高级配置\扭蛋机\alphalottery.xlsx`, text: header + " 行 2 | a=1 | b=普通"}, true, 0.8},
-		{"other exact cell", normalizedCandidateFields{title: "eventsummary", relativePath: `前端\eventsummary.xlsx`, text: header + " 行 2 | a=1 | c=扭蛋机"}, true, 0.75},
+		{"table system directory", normalizedCandidateFields{title: "alphalottery", relativePath: `系统配表\扭蛋机\alphalottery.xlsx`, text: header + " 行 2 | a=1 | b=普通"}, true, 0.8},
+		{"other exact cell", normalizedCandidateFields{title: "questsummary", relativePath: `客户端\questsummary.xlsx`, text: header + " 行 2 | a=1 | c=扭蛋机"}, true, 0.75},
 		{"design directory", normalizedCandidateFields{title: "设定", relativePath: `扭蛋机\设定.docx`}, false, 0.65},
-		{"body mention", normalizedCandidateFields{title: "eventsummary", relativePath: `前端\eventsummary.xlsx`, text: header + " 行 2 | a=1 | c=扭蛋机返场活动"}, true, 0.3},
-		{"missing", normalizedCandidateFields{title: "eventsummary", text: header}, true, 0},
+		{"body mention", normalizedCandidateFields{title: "questsummary", relativePath: `客户端\questsummary.xlsx`, text: header + " 行 2 | a=1 | c=扭蛋机返场活动"}, true, 0.3},
+		{"missing", normalizedCandidateFields{title: "questsummary", text: header}, true, 0},
 	} {
 		if got := fieldMatchStrength(test.fields, "扭蛋机", test.table); got != test.want {
 			t.Errorf("%s strength=%v want %v", test.name, got, test.want)
@@ -120,7 +120,7 @@ func TestGoSearchIdentityKeepsLongerNamesButRanksAndFlagsThem(t *testing.T) {
 			"破晨星·裂空888活动_20251224.md":     "# 玩法\n\n破晨星·裂空888活动首版的玩法与产出。",
 			"【复用】星河龙888活动_20260901.md":    "# 配表\n\n复用活动需要配置的表。",
 		}},
-		{"tables", "table", map[string]string{"activityTime_20260901.md": "# 时间\n\n晨星·守望者888活动开放时间。"}},
+		{"tables", "table", map[string]string{"eventWindow_20260901.md": "# 时间\n\n晨星·守望者888活动开放时间。"}},
 	})
 	ctx := context.Background()
 	titles := func(hits []SearchHit) map[string]SearchHit {
@@ -195,7 +195,7 @@ func TestGoSearchIdentityKeepsLongerNamesButRanksAndFlagsThem(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := titles(small.Search.Hits)["activityTime_20260901"]; !ok {
+	if _, ok := titles(small.Search.Hits)["eventWindow_20260901"]; !ok {
 		t.Fatalf("a small table-first bundle must keep its table evidence: %#v", small.Search.Hits)
 	}
 }
@@ -204,13 +204,13 @@ func TestGoIdentityAdmitsReruns(t *testing.T) {
 	service := newGoSearchService(t, []goSearchSource{
 		{"plans", "design", map[string]string{
 			"晨星·守望者888活动_20251119.md":     "# 玩法\n\n晨星·守望者888活动的玩法与产出。",
-			"晨星守望者限时返场_20260603.md":       "# 概述\n\n晨星守望者888活动返场相关美术调整和配置调整。",
+			"晨星守望者限时返场_20260603.md":       "# 概述\n\n晨星守望者888活动返场相关界面调整和奖励调整。",
 			"晨星推送礼包_20260722.md":          "# 礼包\n\n晨星推送礼包888元档位配置。",
 			"晨星新活动_20260701.md":           "# 概述\n\n玩法参考：晨星守望者888活动，新增星辰挑战。",
 			"晨星守望者周年庆_20260901.md":        "# 概述\n\n玩法参考：晨星守望者888活动；本活动为独立新玩法，不是其返场或复用。",
 			"【复用】破晨星·裂空888活动_20260506.md": "# 玩法\n\n复用破晨星·裂空888活动的玩法与产出。",
 		}},
-		{"tables", "table", map[string]string{"activityTime_20260901.md": "# 时间\n\n晨星·守望者888活动开放时间。"}},
+		{"tables", "table", map[string]string{"eventWindow_20260901.md": "# 时间\n\n晨星·守望者888活动开放时间。"}},
 	})
 	ctx := context.Background()
 	titles := func(hits []SearchHit) map[string]bool {
@@ -264,7 +264,7 @@ func TestGoIdentityAdmitsReruns(t *testing.T) {
 	}{
 		{"复用晨星888", 2, []string{"晨星·守望者888活动_20251119", "晨星守望者限时返场_20260603"}, []string{"【复用】破晨星·裂空888活动_20260506", "晨星守望者周年庆_20260901"}},
 		{"复用晨星888", 3, []string{"晨星·守望者888活动_20251119", "晨星守望者限时返场_20260603", "【复用】破晨星·裂空888活动_20260506"}, nil},
-		{"我要复用晨星888，需要配哪些表", 8, []string{"晨星·守望者888活动_20251119", "晨星守望者限时返场_20260603", "activityTime_20260901"}, nil},
+		{"我要复用晨星888，需要配哪些表", 8, []string{"晨星·守望者888活动_20251119", "晨星守望者限时返场_20260603", "eventWindow_20260901"}, nil},
 	} {
 		bundle, err := service.Search.Retrieve(ctx, RetrievalRequest{SearchRequest: SearchRequest{Query: testCase.query}, MaxDocuments: testCase.maxDocuments})
 		if err != nil {
@@ -295,7 +295,7 @@ func TestGoIdentityRerunSlotGoesToNewestDeclaredRerun(t *testing.T) {
 	service := newGoSearchService(t, []goSearchSource{
 		{"plans", "design", map[string]string{
 			"晨星·守望者888活动_20251119.md":     "# 玩法\n\n晨星·守望者888活动的玩法与产出。",
-			"晨星守望者限时返场_20260603.md":       "# 概述\n\n晨星守望者888活动返场相关美术调整和配置调整。",
+			"晨星守望者限时返场_20260603.md":       "# 概述\n\n晨星守望者888活动返场相关界面调整和奖励调整。",
 			"晨星守望者六月调整_20260705.md":       "# 概述\n\n本次为晨星守望者888活动返场。原玩法完全不变，仅调整上架日期。",
 			"晨星守望者复刻_20260805.md":         "# 概述\n\n晨星守望者888活动复刻，沿用返场配置并调整奖励。",
 			"晨星守望者周年庆复刻_20260910.md":      "# 概述\n\n本文复刻晨星守望者周年庆活动。玩法参考：晨星守望者888活动；本活动是周年庆复刻，不是888的返场或复用。",
@@ -377,10 +377,10 @@ func TestDeclaredRerunContextBindsTheRelationToTheActivityName(t *testing.T) {
 		declared bool
 	}{
 		// 行首声明：行、单元格、句子或列表项以活动名开头，后接关系词。
-		{"晨星守望者888活动返场相关美术调整和配置调整。", true},
+		{"晨星守望者888活动返场相关界面调整和奖励调整。", true},
 		{"晨星·守望者888的复刻，调整奖励。", true},
 		{"# 概述\n晨星守望者888活动复刻，沿用返场配置。", true},
-		{"字段 | A=说明\n行 3 | A=·晨星守望者888活动返场相关美术调整", true},
+		{"字段 | A=说明\n行 3 | A=·晨星守望者888活动返场相关界面调整", true},
 		{"1. 晨星守望者888活动返场，调整上架时间。", true},
 		{"参考上一期配置。\n晨星守望者888活动返场相关调整。", true},
 		{"本期改动：\n- 晨星守望者888活动返场相关调整", true},
@@ -406,7 +406,7 @@ func TestDeclaredRerunContextBindsTheRelationToTheActivityName(t *testing.T) {
 		{"旧稿写的是“说明如下。晨星守望者888活动返场”。本期为独立周年庆，不沿用旧活动。", false},
 		{"参考活动：\n1. 星海远航活动返场\n2. 晨星守望者888活动返场\n本期为独立周年庆。", false},
 		{"行 1 | A=参考活动：\n行 2 | A=·星海远航活动返场\n行 3 | A=·晨星守望者888活动返场\n行 4 | A=本期为独立周年庆。", false},
-		{"行 1 | A=本期改动：\n行 2 | A=·晨星守望者888活动返场相关美术调整", true},
+		{"行 1 | A=本期改动：\n行 2 | A=·晨星守望者888活动返场相关界面调整", true},
 		// 参考标题按单元格识别：同一行另有备注列、标题带编号、标题与条目同一行、条目不带符号、标题不带冒号，
 		// 以及 Markdown、Word 表格和“三、”“##”小节标题，都要找到它；标题与条目之间隔着说明文字也一样。
 		{"行 1 | A=栏目 | B=内容 | C=备注\n行 2 | A=参考活动： | C=仅供对照\n行 3 | B=·星海远航活动返场\n行 4 | B=·晨星守望者888活动返场\n行 5 | A=本期活动 | B=独立周年庆复刻，不沿用888活动", false},
@@ -427,7 +427,7 @@ func TestDeclaredRerunContextBindsTheRelationToTheActivityName(t *testing.T) {
 		{"1.参考活动：\n·星海远航活动返场\n2.本期改动：\n·晨星守望者888活动返场相关调整", true},
 		{"三、参考活动\n·星海远航活动\n四、本期内容\n·晨星守望者888活动返场相关调整", true},
 		{"行 1 | A=参考活动： | B=星海远航活动\n行 2 | A=本期改动：\n行 3 | A=·晨星守望者888活动返场相关调整", true},
-		{"一、系统目的\n·晨星守望者888活动返场相关美术调整和配置调整", true},
+		{"一、系统目的\n·晨星守望者888活动返场相关界面调整和奖励调整", true},
 		{"| 栏目 | 内容 |\n| 本期改动： | ·晨星守望者888活动返场相关调整 |", true},
 		// 标题与参考标题共用单元格级识别：旁边另有备注列、与声明写在同一行、不以“本期”开头但下一列为空、
 		// 不带冒号但以“本期”开头，都是另起的标题。
@@ -488,7 +488,7 @@ func TestGoIdentityMentionsDoNotTakeTheRerunSlot(t *testing.T) {
 		for _, title := range []string{"晨星守望者周年庆_20260901", "晨星守望者周年庆复刻_20260901"} {
 			service := newGoSearchService(t, []goSearchSource{{"plans", "design", map[string]string{
 				"晨星·守望者888活动_20251119.md": "# 玩法\n\n晨星·守望者888活动的玩法与产出。",
-				"晨星守望者限时返场_20260603.md":   "# 概述\n\n晨星守望者888活动返场相关美术调整和配置调整。",
+				"晨星守望者限时返场_20260603.md":   "# 概述\n\n晨星守望者888活动返场相关界面调整和奖励调整。",
 				title + ".md": "# 概述\n\n" + body,
 			}}})
 			bundle, err := service.Search.Retrieve(context.Background(), RetrievalRequest{SearchRequest: SearchRequest{Query: "复用晨星888"}, MaxDocuments: 2})
@@ -509,7 +509,7 @@ func TestGoIdentityTableReferenceListsDoNotTakeTheRerunSlot(t *testing.T) {
 		t.Helper()
 		service := newGoSearchService(t, []goSearchSource{{"plans", "design", map[string]string{
 			"晨星·守望者888活动_20251119.md": "# 玩法\n\n晨星·守望者888活动的玩法与产出。",
-			"晨星守望者限时返场_20260603.md":   "# 概述\n\n晨星守望者888活动返场相关美术调整和配置调整。",
+			"晨星守望者限时返场_20260603.md":   "# 概述\n\n晨星守望者888活动返场相关界面调整和奖励调整。",
 			title + ".csv": table,
 		}}})
 		bundle, err := service.Search.Retrieve(context.Background(), RetrievalRequest{SearchRequest: SearchRequest{Query: "复用晨星888"}, MaxDocuments: 2})
@@ -557,7 +557,7 @@ func TestGoIdentityDeclaredRerunLooksBackAcrossParagraphs(t *testing.T) {
 		t.Helper()
 		service := newGoSearchService(t, []goSearchSource{{"plans", "design", map[string]string{
 			"晨星·守望者888活动_20251119.md": "# 玩法\n\n晨星·守望者888活动的玩法与产出。",
-			"晨星守望者限时返场_20260603.md":   "# 概述\n\n晨星守望者888活动返场相关美术调整和配置调整。",
+			"晨星守望者限时返场_20260603.md":   "# 概述\n\n晨星守望者888活动返场相关界面调整和奖励调整。",
 			title + ".md": body,
 		}}})
 		bundle, err := service.Search.Retrieve(context.Background(), RetrievalRequest{SearchRequest: SearchRequest{Query: "复用晨星888"}, MaxDocuments: 2})
@@ -581,11 +581,11 @@ func TestGoIdentityDeclaredRerunLooksBackAcrossParagraphs(t *testing.T) {
 func TestRerunReferenceSection(t *testing.T) {
 	for headingPath, want := range map[string]bool{
 		`["参考表"]`:             true,
-		`["","","8.2.3参考图片"]`: true,
+		`["","","4.1.2参考图片"]`: true,
 		`["概述","参考活动："]`:      true,
 		`["概述"]`:              false,
 		`null`:                false,
-		`["玩法","玩法：类似这种光线折射游戏，有步数限制"]`: false,
+		`["玩法","玩法：类似这种推箱子解谜，有步数限制"]`: false,
 	} {
 		if got := rerunReferenceSection(headingPath); got != want {
 			t.Fatalf("%s: rerunReferenceSection=%v, want %v", headingPath, got, want)
@@ -596,7 +596,7 @@ func TestRerunReferenceSection(t *testing.T) {
 func TestGoRetrieveBothSourceKindsKeepsTheIdentitySlots(t *testing.T) {
 	designs := map[string]string{
 		"晨星·守望者888活动_20251119.md":     "# 玩法\n\n晨星·守望者888活动的玩法与产出。",
-		"晨星守望者限时返场_20260603.md":       "# 概述\n\n晨星守望者888活动返场相关美术调整和配置调整。",
+		"晨星守望者限时返场_20260603.md":       "# 概述\n\n晨星守望者888活动返场相关界面调整和奖励调整。",
 		"【复用】破晨星·裂空888活动_20260506.md": "# 玩法\n\n复用破晨星·裂空888活动的玩法与产出。",
 	}
 	tables := map[string]string{}
@@ -629,7 +629,7 @@ func TestGoRetrieveIdentityNumberIsNotAnExplicitID(t *testing.T) {
 	service := newGoSearchService(t, []goSearchSource{
 		{"plans", "design", map[string]string{
 			"晨星·守望者888活动_20251119.md":          "# 玩法\n\n晨星·守望者888活动的玩法与产出。",
-			"晨星守望者限时返场_20260603.md":            "# 概述\n\n晨星守望者888活动返场相关美术调整和配置调整。",
+			"晨星守望者限时返场_20260603.md":            "# 概述\n\n晨星守望者888活动返场相关界面调整和奖励调整。",
 			"剧情/晨星·守望者888活动/守望者剧情_20260804.md": "# 剧情\n\n守望者剧情对白。",
 		}},
 		{"tables", "table", tables},
@@ -675,7 +675,7 @@ func TestGoRetrieveTableFirstPrefersSystemDirectoryTablesOverNewerHubTables(t *t
 		tables[fmt.Sprintf("通用/common%d_2026070%d.md", index, index%10)] = fmt.Sprintf("# 通用\n\n通用配置%d：字段与参数。", index)
 	}
 	service := newGoSearchService(t, []goSearchSource{
-		{"plans", "design", map[string]string{"扭蛋机活动_20260819.md": "# 配表实现\n\n扭蛋机配置：抽奖表 alphaLottery，奖池表 alphaPool。"}},
+		{"plans", "design", map[string]string{"扭蛋机活动_20260812.md": "# 配表实现\n\n扭蛋机配置：抽奖表 alphaLottery，奖池表 alphaPool。"}},
 		{"tables", "table", tables},
 	})
 	bundle, err := service.Search.Retrieve(context.Background(), RetrievalRequest{SearchRequest: SearchRequest{Query: "我要新增一个扭蛋机，需要配置哪些表格"}, MaxDocuments: 4})
@@ -686,7 +686,7 @@ func TestGoRetrieveTableFirstPrefersSystemDirectoryTablesOverNewerHubTables(t *t
 	for _, hit := range bundle.Search.Hits {
 		titles[hit.Title] = true
 	}
-	for _, wanted := range []string{"alphaLottery_20260801", "alphaPool_20260802", "扭蛋机活动_20260819"} {
+	for _, wanted := range []string{"alphaLottery_20260801", "alphaPool_20260802", "扭蛋机活动_20260812"} {
 		if !titles[wanted] {
 			t.Fatalf("missing %s in %v", wanted, titles)
 		}

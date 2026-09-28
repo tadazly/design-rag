@@ -83,8 +83,8 @@ func flattenTestFiles(definitions []goSearchSource) []string {
 func TestGoSearchLatestActivityUsesTitleIdentityNotNewerBodyMatch(t *testing.T) {
 	service := newGoSearchService(t, []goSearchSource{
 		{"plans", "design", map[string]string{
-			"环潮龙888活动_20260101.md": "# 玩法\n\n环潮龙888活动的玩法和产出逻辑。",
-			"冰王888活动_20251201.md":  "# 玩法\n\n冰王888活动的历史方案。",
+			"澜星龙888活动_20260101.md": "# 玩法\n\n澜星龙888活动的玩法和产出逻辑。",
+			"霁王888活动_20251201.md":  "# 玩法\n\n霁王888活动的历史方案。",
 		}},
 		{"tables", "table", map[string]string{
 			"rule_20260831.md": "# 数据\n\n规则表正文包含 888，但它不是活动策划身份。",
@@ -95,7 +95,7 @@ func TestGoSearchLatestActivityUsesTitleIdentityNotNewerBodyMatch(t *testing.T) 
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(result.Hits) == 0 || result.Hits[0].Title != "环潮龙888活动_20260101" {
+		if len(result.Hits) == 0 || result.Hits[0].Title != "澜星龙888活动_20260101" {
 			t.Fatalf("%s top=%v", query, result.Hits)
 		}
 		for _, hit := range result.Hits {
@@ -141,10 +141,10 @@ func TestGoSearchKeepsEachExplicitStrongIDInEvidence(t *testing.T) {
 
 func TestGoRetrieveDocumentIDsSearchesInsideSelectedDocument(t *testing.T) {
 	service := newGoSearchService(t, []goSearchSource{{"plans", "design", map[string]string{
-		"目标活动_20260831.md":  "# 玩法产出\n\neventSummary 记录活动货币产出与兑换流程。",
-		"全词干扰项_20260901.md": "# 配置\n\neventSummary dropUnit item statistic 玩法产出。",
+		"目标活动_20260831.md":  "# 玩法产出\n\nquestSummary 记录活动货币产出与兑换流程。",
+		"全词干扰项_20260901.md": "# 配置\n\nquestSummary dropUnit item statLog 玩法产出。",
 	}}})
-	selected, err := service.Search.Search(context.Background(), SearchRequest{Query: "目标活动 eventSummary", Limit: 8})
+	selected, err := service.Search.Search(context.Background(), SearchRequest{Query: "目标活动 questSummary", Limit: 8})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +157,7 @@ func TestGoRetrieveDocumentIDsSearchesInsideSelectedDocument(t *testing.T) {
 	if documentID == "" {
 		t.Fatal("selected document missing")
 	}
-	bundle, err := service.Search.Retrieve(context.Background(), RetrievalRequest{SearchRequest: SearchRequest{Query: "eventSummary dropUnit item statistic 玩法产出"}, DocumentIDs: []string{documentID}, MaxDocuments: 1, MaxChunksPerDocument: 3, MaxChars: 8000})
+	bundle, err := service.Search.Retrieve(context.Background(), RetrievalRequest{SearchRequest: SearchRequest{Query: "questSummary dropUnit item statLog 玩法产出"}, DocumentIDs: []string{documentID}, MaxDocuments: 1, MaxChunksPerDocument: 3, MaxChars: 8000})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,17 +169,17 @@ func TestGoRetrieveDocumentIDsSearchesInsideSelectedDocument(t *testing.T) {
 func TestGoEntityIDTargetedProjectionKeepsExactRowAndIdentifierFields(t *testing.T) {
 	text := strings.Join([]string{
 		"字段 | A=版本 | B=类型 | C=名称 | D=出处 | E=形态 | F=属性 | G=petId | H=modelId | I=petClass | J=eggId | K=图纸Id | L=图纸碎片Id | M=缩略图",
-		"行 1618 | A[版本]=20260923 | B=精灵 | C=史密 | D=888活动 | E=小形态 | F=龙 | G=11346 | H=3825 | I=13668 | J=1367 | K=71275 | L=81275",
-		"行 1619 | A[版本]=20260923 | B=精灵 | C=龙王史密斯 | D=888活动 | E=大形态 | F=龙 | G=11347 | H=3826 | I=13668 | J=1367 | K=71275 | L=81275",
-		"行 1620 | A[版本]=20260826 | B=精灵 | C=伊瓦 | D=充值盒子精灵 | E=小形态 | F=机械 战斗 | G=11348 | H=3827 | I=13669 | J=1368 | K=71276 | L=81276",
+		"行 1618 | A[版本]=20260923 | B=精灵 | C=奥赫 | D=888活动 | E=小形态 | F=龙 | G=90346 | H=5825 | I=40668 | J=2367 | K=61275 | L=91275",
+		"行 1619 | A[版本]=20260923 | B=精灵 | C=星王奥赫斯 | D=888活动 | E=大形态 | F=龙 | G=90347 | H=5826 | I=40668 | J=2367 | K=61275 | L=91275",
+		"行 1620 | A[版本]=20260826 | B=精灵 | C=露塔 | D=限时礼盒精灵 | E=小形态 | F=机械 战斗 | G=90348 | H=5827 | I=40669 | J=2368 | K=61276 | L=91276",
 	}, "\n")
 	projection, err := MakeExcerpt(text, "Sheet1!A1618:M1620", []string{
-		"龙王史密斯", "petid", "modelid", "petclass", "eggid", "图纸id", "图纸碎片id",
+		"星王奥赫斯", "petid", "modelid", "petclass", "eggid", "图纸id", "图纸碎片id",
 	}, 520)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, marker := range []string{"C=龙王史密斯", "G=petId", "H=modelId", "G=11347", "H=3826", "A[版本]=20260923"} {
+	for _, marker := range []string{"C=星王奥赫斯", "G=petId", "H=modelId", "G=90347", "H=5826", "A[版本]=20260923"} {
 		if !strings.Contains(projection.Text, marker) {
 			t.Fatalf("entity ID projection missing %s: %s", marker, projection.Text)
 		}
@@ -206,7 +206,7 @@ func TestGoScopedCitationPreservesUTF16SlicesAndRejectsTampering(t *testing.T) {
 		rows.WriteString(value)
 		rows.WriteString(",轮盘奖池配置\n")
 	}
-	service := newGoSearchService(t, []goSearchSource{{"tables", "table", map[string]string{"newPrizePool_20260902.csv": header + rows.String()}}})
+	service := newGoSearchService(t, []goSearchSource{{"tables", "table", map[string]string{"starPrizePool_20260902.csv": header + rows.String()}}})
 	bundle, err := service.Search.Retrieve(context.Background(), RetrievalRequest{SearchRequest: SearchRequest{Query: "unique_target", SourceKinds: []string{"table"}}, MaxDocuments: 1, MaxChunksPerDocument: 1, MaxChars: 8000})
 	if err != nil {
 		t.Fatal(err)

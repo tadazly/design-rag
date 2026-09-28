@@ -175,7 +175,7 @@ func TestGoMakeExcerptWideWindowStopsAtTheBudget(t *testing.T) {
 }
 
 func TestGoTargetedRetrieveReadsWholeSpreadsheetSection(t *testing.T) {
-	tables := []string{"costPack", "rewardPool", "taskConfig", "shopItem", "statistic", "activityTime", "rankReward", "mailTemplate"}
+	tables := []string{"costBundle", "prizeBundle", "taskConfig", "shopGoods", "statLog", "eventWindow", "rankReward", "mailTemplate"}
 	rows := []string{"模块,内容,备注", "概述,晨星挑战活动介绍,无", "玩法,每日挑战三次,无", "奖励,排行奖励,无", "配表实现,本次涉及以下配表,见下"}
 	for _, table := range tables {
 		rows = append(rows, "配表,"+table+" 配置,新增")

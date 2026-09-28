@@ -9,14 +9,14 @@ import { makeExcerpt, queryAnchorSignals, SearchEngine } from "../src/core/searc
 import type { AppConfig, KnowledgeSourceConfig } from "../src/shared/contracts.js";
 
 test("查询信号提取中文活动实体组但不把泛 888 活动或显式表 ID 混为实体", () => {
-  assert.deepEqual(queryAnchorSignals("环潮龙888 产出逻辑").identityGroups, [
-    { phrase: "环潮龙888", terms: ["环潮龙", "888"] },
+  assert.deepEqual(queryAnchorSignals("澜星龙888 产出逻辑").identityGroups, [
+    { phrase: "澜星龙888", terms: ["澜星龙", "888"] },
   ]);
-  assert.deepEqual(queryAnchorSignals("我要复用妖王888，需要配哪些表").identityGroups, [
-    { phrase: "妖王888", terms: ["妖王", "888"] },
+  assert.deepEqual(queryAnchorSignals("我要复用焰王888，需要配哪些表").identityGroups, [
+    { phrase: "焰王888", terms: ["焰王", "888"] },
   ]);
   assert.deepEqual(queryAnchorSignals("找到最新的一个 888活动").identityGroups, []);
-  assert.deepEqual(queryAnchorSignals("newLottery newPrizePool 配置").identityGroups, []);
+  assert.deepEqual(queryAnchorSignals("starLottery starPrizePool 配置").identityGroups, []);
 });
 
 test("表格检索投影保留字段名并把 locator 收窄到命中行窗口", () => {
@@ -29,12 +29,12 @@ test("表格检索投影保留字段名并把 locator 收窄到命中行窗口",
     "字段 | A=ID | B=类型 | C=奖励ID | D=权重",
     ...rows,
   ].join("\n");
-  const projection = makeExcerpt(text, "newPrizePool!A1:D192", ["unique_target"]);
+  const projection = makeExcerpt(text, "starPrizePool!A1:D192", ["unique_target"]);
   assert.match(projection.text, /^字段映射（投影）/);
   assert.doesNotMatch(projection.text, /字段（行 \d+）/, "不得把 chunk 起始行伪装成真实表头行");
   assert.match(projection.text, /C=奖励ID/);
   assert.match(projection.text, /行 150 .*C=unique_target/);
-  assert.equal(projection.locator, "newPrizePool!A148:D152");
+  assert.equal(projection.locator, "starPrizePool!A148:D152");
   assert(projection.text.length <= 520);
   assert(!projection.text.includes("行 1 | A=1"), "命中窗口不应回退为块首 520 字符");
 });
@@ -49,7 +49,7 @@ test("表格投影优先强查询词、保留无表头稀疏列并严格遵守 m
   const projection = makeExcerpt([
     "字段 | A=ID | B=类型 | C=普通字段",
     ...rows,
-  ].join("\n"), "newPrizePool!A193:Z384", ["unique_target", "配置"], 180);
+  ].join("\n"), "starPrizePool!A193:Z384", ["unique_target", "配置"], 180);
 
   assert.match(projection.text, /Z=unique_target/);
   assert.match(projection.text, /Z=未命名字段/);
@@ -60,18 +60,18 @@ test("表格投影优先强查询词、保留无表头稀疏列并严格遵守 m
 test("表格投影优先完整命名实体而不是更早出现的泛数字", () => {
   const rows = Array.from({ length: 80 }, (_, index) => {
     const row = index + 1;
-    if (row === 2) return `行 ${row} | A=101888 | B=冰王累充任务 | C=累计充值388元`;
-    if (row === 70) return `行 ${row} | A=102416 | B=环潮龙888活动 | C=击败敌人产出活动货币`;
+    if (row === 2) return `行 ${row} | A=101888 | B=霁王累充任务 | C=累计充值388元`;
+    if (row === 70) return `行 ${row} | A=102416 | B=澜星龙888活动 | C=击败敌人产出活动货币`;
     return `行 ${row} | A=${100000 + row} | B=普通活动 | C=普通配置`;
   });
   const projection = makeExcerpt([
     "字段 | A=ID | B=活动名称 | C=任务描述",
     ...rows,
-  ].join("\n"), "activityTaskReset!A1:C80", ["888", "环潮龙888", "环潮龙"]);
+  ].join("\n"), "questCycleReset!A1:C80", ["888", "澜星龙888", "澜星龙"]);
 
-  assert.match(projection.text, /环潮龙888活动/);
-  assert.doesNotMatch(projection.text, /冰王累充任务/);
-  assert.equal(projection.locator, "activityTaskReset!A68:C72");
+  assert.match(projection.text, /澜星龙888活动/);
+  assert.doesNotMatch(projection.text, /霁王累充任务/);
+  assert.equal(projection.locator, "questCycleReset!A68:C72");
 });
 
 test("投影 citation 回读同一 locator 和内容，旧 chunk citation 继续回读整块", async () => {
@@ -118,43 +118,43 @@ test("投影 citation 回读同一 locator 和内容，旧 chunk citation 继续
   };
   const rows = Array.from({ length: 192 }, (_, index) => {
     const row = index + 193;
-    if (row === 222) return `行 ${row} | A=newLottery | B=222 | C=扭蛋机重做抽奖配置 | I=winningProbability | N=扭蛋机素材目录`;
-    if (row === 223) return `行 ${row} | A=newPrizePool | B=223 | C=扭蛋机重做奖池配置 | I=weight | N=奖池素材目录`;
+    if (row === 222) return `行 ${row} | A=starLottery | B=222 | C=扭蛋机新版抽奖配置 | I=hitProbability | N=扭蛋机素材目录`;
+    if (row === 223) return `行 ${row} | A=starPrizePool | B=223 | C=扭蛋机新版奖池配置 | I=weight | N=奖池素材目录`;
     return `行 ${row} | A=table${row} | B=${row} | C=普通配置 | N=普通素材目录`;
   });
   const chunkText = [
-    "字段 | A=表名 | B=ID | C=类型名称 | D=子健 | E=合并到索引表 | F=发布时删除 | G=结束时间过滤 | H=多维表关联 | I=敏感字段 | J=有效性验证 | K=转换为html格式的字段 | L=宏定义命名空间 | M=宏定义字段 | N=素材目录 | O=...",
+    "字段 | A=表名 | B=ID | C=类型说明 | D=子键 | E=汇入总表 | F=发版时移除 | G=按截止时间过滤 | H=关联子表 | I=敏感列 | J=校验规则 | K=富文本字段 | L=常量命名空间 | M=常量字段 | N=素材目录 | O=...",
     ...rows,
   ].join("\n");
   const gachaRows = Array.from({ length: 109 }, (_, index) => {
     const row = index + 1;
-    if (row === 1) return "行 1 | A=id | B=权重 | C=名称 | F=概率期望 | H=奖池 | I=道具 | J=权重 | K=赛尔豆 | L=钻石 | M=钻石期望 | O=实际钻石期望";
-    if (row === 2) return "行 2 | A=1003 | B=160 | C=回血药高级 | E=1003_160 | F=0.0235 | H=普通奖池 | I=回血药高级 | J=160 | K=4000 | L=2 | M=0.1546 | O=0.0470";
-    if (row === 3) return "行 3 | A=1004 | B=200 | C=回血药超级 | E=1004_200 | F=0.0293 | I=回血药超级 | J=80 | K=20000 | L=10 | M=0.3866 | O=0.2938";
+    if (row === 1) return "行 1 | A=id | B=权重 | C=名称 | F=期望概率 | H=奖池 | I=道具 | J=权重 | K=星豆 | L=钻石 | M=钻石估值 | O=实际钻石估值";
+    if (row === 2) return "行 2 | A=1003 | B=160 | C=体力药剂A | E=1003_160 | F=0.0235 | H=普通奖池 | I=体力药剂A | J=160 | K=4000 | L=2 | M=0.1546 | O=0.0470";
+    if (row === 3) return "行 3 | A=1004 | B=200 | C=体力药剂S | E=1004_200 | F=0.0293 | I=体力药剂S | J=80 | K=20000 | L=10 | M=0.3866 | O=0.2938";
     return `行 ${row} | A=${10_000 + row} | B=20 | E=${10_000 + row}_20 | F=0.0029 | I=扭蛋机奖池道具${row} | J=20 | L=30 | M=0.2899 | O=0.0881`;
   });
   const gachaText = [
-    "字段 | A=id | B=权重 | C=名称 | F=概率期望 | H=奖池 | I=道具 | J=权重 | K=赛尔豆 | L=钻石 | M=钻石期望 | O=实际钻石期望",
+    "字段 | A=id | B=权重 | C=名称 | F=期望概率 | H=奖池 | I=道具 | J=权重 | K=星豆 | L=钻石 | M=钻石估值 | O=实际钻石估值",
     ...gachaRows,
   ].join("\n");
   const database = new IndexDatabase(path.join(root, "index.sqlite"));
   try {
     database.replaceDocument({
-      id: "doc_a6a36c4ac001cdb0bbc35193",
+      id: "doc_5eed00000000000000000a01",
       candidate: {
         sourceId: source.id,
         sourceLabel: source.label,
         sourceKind: source.kind,
         sourceIdentity: sourceIndexIdentity(source),
         rootPath: sourceRoot,
-        absolutePath: path.join(sourceRoot, "eventSummary.xlsx"),
-        relativePath: "eventSummary.xlsx",
+        absolutePath: path.join(sourceRoot, "questSummary.xlsx"),
+        relativePath: "questSummary.xlsx",
         extension: ".xlsx",
         sizeBytes: chunkText.length,
         filesystemMtimeMs: Date.parse("2026-08-31T00:00:00Z"),
       },
-      title: "$items",
-      familyKey: "$items",
+      title: "$entries",
+      familyKey: "$entries",
       familyConfidence: 1,
       contentHash: "d".repeat(64),
       date: {
@@ -177,21 +177,21 @@ test("投影 citation 回读同一 locator 和内容，旧 chunk citation 继续
       needsOcr: false,
     }, "scoped-citation-test");
     database.replaceDocument({
-      id: "doc_599d124b04dad9a05db5d0af",
+      id: "doc_5eed00000000000000000a02",
       candidate: {
         sourceId: source.id,
         sourceLabel: source.label,
         sourceKind: source.kind,
         sourceIdentity: sourceIndexIdentity(source),
         rootPath: sourceRoot,
-        absolutePath: path.join(sourceRoot, "newPrizePool_2.xlsx"),
-        relativePath: "common/高级配置/fanta/扭蛋机/newPrizePool_2.xlsx",
+        absolutePath: path.join(sourceRoot, "starPrizePool_2.xlsx"),
+        relativePath: "config/系统配表/demo/扭蛋机/starPrizePool_2.xlsx",
         extension: ".xlsx",
         sizeBytes: gachaText.length,
         filesystemMtimeMs: Date.parse("2026-08-31T00:00:00Z"),
       },
-      title: "newPrizePool_2",
-      familyKey: "newPrizePool_2",
+      title: "starPrizePool_2",
+      familyKey: "starPrizePool_2",
       familyConfidence: 1,
       contentHash: "f".repeat(64),
       date: {
@@ -215,8 +215,8 @@ test("投影 citation 回读同一 locator 和内容，旧 chunk citation 继续
     }, "scoped-citation-gacha-test");
     const engine = new SearchEngine(database, () => config);
     const result = await engine.retrieve({
-      query: "newLottery newPrizePool 素材目录 配置",
-      documentIds: ["doc_a6a36c4ac001cdb0bbc35193"],
+      query: "starLottery starPrizePool 素材目录 配置",
+      documentIds: ["doc_5eed00000000000000000a01"],
       sourceKinds: ["table"],
       maxDocuments: 1,
     });
@@ -245,7 +245,7 @@ test("投影 citation 回读同一 locator 和内容，旧 chunk citation 继续
 
     const gacha = await engine.retrieve({
       query: "我要新增一个扭蛋机，需要配置哪些表格",
-      documentIds: ["doc_599d124b04dad9a05db5d0af"],
+      documentIds: ["doc_5eed00000000000000000a02"],
       sourceKinds: ["table"],
       maxDocuments: 1,
       maxChunksPerDocument: 3,
@@ -281,7 +281,7 @@ test("投影 citation 回读同一 locator 和内容，旧 chunk citation 继续
     const v1Read = engine.readCitation(v1CitationId);
     assert.equal(v1Read.citation.citationId, v1CitationId);
     assert.equal(v1Read.citation.locator, v1Scope.l);
-    assert.match(v1Read.content, /普通奖池|回血药高级/);
+    assert.match(v1Read.content, /普通奖池|体力药剂A/);
   } finally {
     database.close();
   }

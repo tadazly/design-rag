@@ -5,10 +5,10 @@ import { findDates, resolveEffectiveDate } from "../src/core/dates.js";
 import { cjkSearchTerms, normalizeText } from "../src/core/text.js";
 
 test("中文 tokenizer 同时生成单字、双字与短语", () => {
-  const terms = cjkSearchTerms("幸运轮盘抽奖 LUCKY_WHEEL_ACT");
+  const terms = cjkSearchTerms("幸运轮盘抽奖 STAR_WHEEL_ACT");
   assert(terms.includes("轮盘"));
   assert(terms.includes("抽奖"));
-  assert(terms.includes("lucky_wheel_act"));
+  assert(terms.includes("star_wheel_act"));
   assert.equal(normalizeText("  幸运\u200b轮盘  "), "幸运轮盘");
 });
 
@@ -69,7 +69,7 @@ test("封面版本日期是弱证据，明确迭代目录日期优先", () => {
 
 test("明确版本日期行支持 SheetJS M/D/YY 显示值", () => {
   const result = resolveEffectiveDate({
-    absolutePath: "D:\\DesignRag\\examples\\design-docs\\剧情规划.xlsx",
+    absolutePath: "D:\\DesignRag\\examples\\design-docs\\示例剧情排期.xlsx",
     contentSample: "Sheet2 字段 | A=版本日期 | B=2/26/20 | C=2/12/25",
     embeddedModifiedAt: "2021-11-16T03:47:56Z",
     filesystemMtimeMs: 1,
@@ -92,7 +92,7 @@ test("大型版本表扫描超过旧 120k 截断位置", () => {
 test("普通需求中的版本宣传不冒充版本日志", () => {
   const result = resolveEffectiveDate({
     absolutePath: "D:\\DesignRag\\examples\\design-docs\\art.xlsx",
-    contentSample: "首次交付验收时间：2026.1.21，通过验收不晚于：2026.1.28，游戏内用于版本宣传或皮肤售卖。",
+    contentSample: "初稿交付时间：2026.1.21，终稿验收不晚于：2026.1.28，用于版本宣传图和皮肤商品页。",
     embeddedModifiedAt: "2025-12-16T03:41:57Z",
     filesystemMtimeMs: Date.parse("2026-08-04T00:00:00Z"),
   });

@@ -10,7 +10,7 @@ if (process.env.RUN_LIVE_CODEX_SMOKE !== "1") {
 const prompts = process.argv.slice(2).length > 0 ? process.argv.slice(2) : [
   "找到最新的一个 888活动，说明一下里面的玩法和产出逻辑",
   "我要新增一个扭蛋机，需要配置哪些表格",
-  "我要复用妖王888，需要配哪些表，帮我把新的配置列出来",
+  "我想复用轮盘抽奖活动，有哪些可以复用",
 ];
 const reportName = process.env.DESIGN_RAG_CHAT_REPORT_NAME?.trim() || "generated-chat-report.json";
 

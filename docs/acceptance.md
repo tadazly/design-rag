@@ -115,6 +115,19 @@ Windows `0.2.3` Plugin、两个全新 Codex host 会话和 fresh `drag-gui` 均�
 
 策划案与配表采用“先策划案冷库、再首次启用配表”的两段真实流程；两段不能相加冒充单个命令的端到端测量。最终同一 SQLite 为 `1,103,151,104 bytes`，包含 11,260 physical documents、120,909 chunks/FTS rows、45,287 trigram rows、stale 0，`quick_check=ok`。
 
+## 真实语料期望清单
+
+真实语料验收用到的期望清单含真实文件名、活动名和表名，只保存在本地未跟踪的 `tests/.tmp/real-corpus/`，仓库内只保留虚构示例：
+
+| 清单 | 使用方 | 指定方式 |
+|---|---|---|
+| `date-parity-cases.json` | `go/core/dates_corpus_test.go`、`tests/date-corpus.test.ts` | `DRAG_DATE_PARITY_CASES` |
+| `corpus-known-failures.json` | `npm run accept:go-full` | `-known-failures` |
+| `evidence-ab-cases.json` | `npm run accept:evidence-ab` | `--cases=` |
+| `smoke-questions.json` | `scripts/smoke-retrieval-questions.mjs` | `DRAG_SMOKE_QUESTIONS` |
+
+缺少清单时，日期门禁、`accept:go-full` 和 `accept:evidence-ab` 直接失败；检索冒烟改用不含真实名称的默认题目。
+
 ## Node/Go evidence A/B
 
 两端使用完全相同的 11,269 文件 inventory。A/B 结果：
@@ -125,7 +138,7 @@ Windows `0.2.3` Plugin、两个全新 Codex host 会话和 fresh `drag-gui` 均�
 - same inventory、latest top-1、top-1 parity、required Recall@8、required identity Recall@8、citation readability、六题总门禁全部为 true；
 - 隐藏工具/凭据目录及明显 secret 文档进入索引或 evidence 的数量为 0。
 
-六个问题覆盖最新 888、扭蛋机配表、妖王888复用、轮盘复用、环潮龙888产出和显式 `newLottery newPrizePool` ID。A/B 只证明相同语料、当前索引表示和检索门禁；不会把历史 Node 总耗时冒充为本次 Go 运行耗时。
+六个问题覆盖最新 888 活动、新增扭蛋机配表、指定活动复用、轮盘复用、指定活动产出和显式配表 ID。A/B 只证明相同语料、当前索引表示和检索门禁；不会把历史 Node 总耗时冒充为本次 Go 运行耗时。
 
 ## 来源生命周期与崩溃恢复
 
@@ -157,7 +170,7 @@ Windows Plugin 最终包：
 - Go core SHA-256：`0905ab2b05e1b8e988aab1ad867126192014e55183828799b33751cdb90c95d3`
 - 官方 Node archive SHA-256：`57f71ab3652e797d84acddc79c81cc9ff1c6ddb2a1974cdb83f00fee9bff4c73`
 
-最终安装缓存为 `0.2.3+codex.20260901072442`。缓存中的 manifest、MCP 配置、Skill、search、MCP server 和 Go core 均与 stage 匹配。两个相互独立的 `gpt-5.6-sol`、`max` 推理 Codex 新宿主会话分别完成扭蛋机配表和妖王888复用问题：
+最终安装缓存为 `0.2.3+codex.20260901072442`。缓存中的 manifest、MCP 配置、Skill、search、MCP server 和 Go core 均与 stage 匹配。两个相互独立的 `gpt-5.6-sol`、`max` 推理 Codex 新宿主会话分别完成扭蛋机配表和指定 888 活动复用问题：
 
 - 使用正确的 `design-rag` MCP server；
 - backend `0.2.3`、protocol 2；

@@ -220,9 +220,9 @@ func TestExtractDocxPreservesHeadingsTablesAndModifiedDate(t *testing.T) {
 
 func TestExtractXlsxIgnoresDimensionAndKeepsRanges(t *testing.T) {
 	root := t.TempDir()
-	filePath := filepath.Join(root, "newLottery.xlsx")
+	filePath := filepath.Join(root, "starLottery.xlsx")
 	writeArchive(t, filePath, map[string]string{
-		"xl/workbook.xml":            `<workbook xmlns:r="r"><sheets><sheet name="newLottery" sheetId="1" r:id="rId1"/></sheets></workbook>`,
+		"xl/workbook.xml":            `<workbook xmlns:r="r"><sheets><sheet name="starLottery" sheetId="1" r:id="rId1"/></sheets></workbook>`,
 		"xl/_rels/workbook.xml.rels": `<Relationships><Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>`,
 		"xl/sharedStrings.xml":       `<sst><si><t>字段</t></si><si><t>值</t></si><si><t>奖池ID</t></si><si><t>1001</t></si></sst>`,
 		"xl/worksheets/sheet1.xml": `<worksheet><dimension ref="A1:XFD1048576"/><sheetData>
@@ -239,7 +239,7 @@ func TestExtractXlsxIgnoresDimensionAndKeepsRanges(t *testing.T) {
 		t.Fatalf("unexpected blocks: %#v", document.Blocks)
 	}
 	block := document.Blocks[0]
-	if block.Locator != "newLottery!A1:B2" || !strings.Contains(block.Text, "字段 | A=字段 | B=值") ||
+	if block.Locator != "starLottery!A1:B2" || !strings.Contains(block.Text, "字段 | A=字段 | B=值") ||
 		!strings.Contains(block.Text, "行 2 | A=奖池ID | B=1001") || strings.Contains(block.Text, "raw=0") {
 		t.Fatalf("unexpected block: %#v", block)
 	}
@@ -317,7 +317,7 @@ func TestSheetDateCollectorUsesStructuredVersionEvidence(t *testing.T) {
 		collector.observe(sheetRow{Number: 1, Cells: []sheetCell{
 			{Address: "A1", Column: 0, Text: "期数", CachedValue: "期数"},
 			{Address: "B1", Column: 1, Text: "招募版本", CachedValue: "招募版本"},
-			{Address: "C1", Column: 2, Text: "玩家可进入时间", CachedValue: "玩家可进入时间"},
+			{Address: "C1", Column: 2, Text: "玩家入场时间", CachedValue: "玩家入场时间"},
 		}})
 		collector.observe(sheetRow{Number: 2, Cells: []sheetCell{
 			{Address: "B2", Column: 1, Text: "20241127", CachedValue: "20241127"},
@@ -394,8 +394,8 @@ func TestSpreadsheetChunksRepeatHeaderOnceAndNarrowRowLocator(t *testing.T) {
 		lines = append(lines, fmt.Sprintf("行 %d | A=%d | B=奖励 | C=reward_%d | D=%s", row, row, row, strings.Repeat("描述", 24)))
 	}
 	chunks := ChunkBlocks([]Block{{
-		Text: strings.Join(lines, "\n"), HeadingPath: []string{"newPrizePool"},
-		SectionType: "config", Locator: "newPrizePool!A1:D420",
+		Text: strings.Join(lines, "\n"), HeadingPath: []string{"starPrizePool"},
+		SectionType: "config", Locator: "starPrizePool!A1:D420",
 	}})
 	if len(chunks) < 2 {
 		t.Fatalf("fixture must create multiple chunks: %d", len(chunks))

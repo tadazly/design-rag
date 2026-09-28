@@ -1159,7 +1159,7 @@ func titleIdentityKind(title string, groups []documentIdentityGroup) (matched, s
 }
 
 // newerIdentityExample 比较两份候选作为提示示例的优先级：日期新者优先，同日期取标题较短者
-// （主策划通常不带“数组特效设计”这类附加说明），再按标题排序保证结果确定。
+// （主策划通常不带“美术需求”“数值补充”这类附加说明），再按标题排序保证结果确定。
 func newerIdentityExample(candidate, current *LexicalCandidateRow) bool {
 	if current == nil || candidate.EffectiveUpdatedAtMS != current.EffectiveUpdatedAtMS {
 		return current == nil || candidate.EffectiveUpdatedAtMS > current.EffectiveUpdatedAtMS

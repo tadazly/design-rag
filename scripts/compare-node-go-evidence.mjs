@@ -25,7 +25,10 @@ function pathKey(value) {
   return path.resolve(value).normalize("NFC").replaceAll("\\", "/").toLowerCase();
 }
 
-export const queryCases = [
+// 仓库内的题单使用虚构活动名与表名，只用于 --self-test。对真实语料验收时，从本地未跟踪的
+// JSON（--cases=...，默认 tests/.tmp/real-corpus/evidence-ab-cases.json）读入同 id 的真实题单，
+// 正则以字符串保存并按不区分大小写编译。
+const fictionalQueryCases = [
   {
     id: "latest-888",
     query: "找到最新的一个 888活动，说明一下里面的玩法和产出逻辑",
@@ -36,13 +39,13 @@ export const queryCases = [
   {
     id: "gacha-tables",
     query: "我要新增一个扭蛋机，需要配置哪些表格",
-    required: [/newLottery/i, /newPrizePool/i],
+    required: [/starLottery/i, /starPrizePool/i],
   },
   {
-    id: "reuse-demon-888",
-    query: "我要复用妖王888，需要配哪些表，帮我把新的配置列出来",
-    required: [/(妖王.*888|888.*妖王)/i],
-    requiredDocumentIdentity: [/(妖王.*888|888.*妖王)/i],
+    id: "reuse-named-888",
+    query: "我要复用焰王888，需要配哪些表，帮我把新的配置列出来",
+    required: [/(焰王.*888|888.*焰王)/i],
+    requiredDocumentIdentity: [/(焰王.*888|888.*焰王)/i],
   },
   {
     id: "wheel-reuse",
@@ -50,18 +53,42 @@ export const queryCases = [
     required: [/(轮盘|转盘)/i],
   },
   {
-    id: "ring-tide-888-output",
-    query: "环潮龙888 产出逻辑",
-    required: [/环潮龙.*888/i],
-    top1: /环潮龙.*888/i,
+    id: "named-888-output",
+    query: "澜星龙888 产出逻辑",
+    required: [/澜星龙.*888/i],
+    top1: /澜星龙.*888/i,
     top1DocumentIdentity: true,
   },
   {
     id: "explicit-table-ids",
-    query: "newLottery newPrizePool 配置",
-    required: [/newLottery/i, /newPrizePool/i],
+    query: "starLottery starPrizePool 配置",
+    required: [/starLottery/i, /starPrizePool/i],
   },
 ];
+
+export let queryCases = fictionalQueryCases;
+
+async function loadQueryCases(casesPath) {
+  let raw;
+  try {
+    raw = JSON.parse(await readFile(casesPath, "utf8"));
+  } catch (error) {
+    throw new Error(`本地真实语料题单不可读：${casesPath}（题单含真实活动名，只放在本地未跟踪目录）`, { cause: error });
+  }
+  const pattern = (value) => new RegExp(value, "i");
+  const cases = raw.map((item) => ({
+    id: item.id,
+    query: item.query,
+    required: item.required.map(pattern),
+    ...(item.top1 ? { top1: pattern(item.top1), top1DocumentIdentity: item.top1DocumentIdentity === true } : {}),
+    ...(item.requiredDocumentIdentity ? { requiredDocumentIdentity: item.requiredDocumentIdentity.map(pattern) } : {}),
+  }));
+  const expectedIds = fictionalQueryCases.map((item) => item.id).sort().join(",");
+  if (cases.map((item) => item.id).sort().join(",") !== expectedIds) {
+    throw new Error(`本地题单必须恰好包含这些 id：${expectedIds}`);
+  }
+  return cases;
+}
 
 function searchableHit(hit) {
   return `${hit.title}\n${hit.relativePath}\n${hit.excerpts.map((excerpt) => `${excerpt.locator}\n${excerpt.text}`).join("\n")}`;
@@ -464,31 +491,31 @@ async function selfTest() {
     excerpts: [{ locator: "rule!A888", text: "正文包含 888", headingPath: [] }],
   }), false, "latest top1 不得由 excerpt/body 中的 anchor 通过");
   assert.equal(top1Matches(latestCase, {
-    title: "环潮龙888活动_20260722",
-    relativePath: "2026/环潮龙888活动_20260722.xlsx",
+    title: "澜星龙888活动_20260722",
+    relativePath: "2026/澜星龙888活动_20260722.xlsx",
     excerpts: [],
   }), true, "latest top1 的 title/path anchor 应通过");
-  const ringCase = queryCases.find((item) => item.id === "ring-tide-888-output");
-  assert(ringCase);
-  assert.equal(top1Matches(ringCase, {
+  const namedOutputCase = queryCases.find((item) => item.id === "named-888-output");
+  assert(namedOutputCase);
+  assert.equal(top1Matches(namedOutputCase, {
     title: "errorCode",
     relativePath: "tables/errorCode.xlsx",
-    excerpts: [{ locator: "errorCode!A1:G24", text: "正文包含环潮龙888", headingPath: [] }],
-  }), false, "ring-tide top1 不得由 excerpt/body 冒充活动身份");
-  assert.equal(top1Matches(ringCase, {
-    title: "环潮龙888活动_20260722",
-    relativePath: "2026/环潮龙888活动_20260722.xlsx",
+    excerpts: [{ locator: "errorCode!A1:G24", text: "正文包含澜星龙888", headingPath: [] }],
+  }), false, "named-888 top1 不得由 excerpt/body 冒充活动身份");
+  assert.equal(top1Matches(namedOutputCase, {
+    title: "澜星龙888活动_20260722",
+    relativePath: "2026/澜星龙888活动_20260722.xlsx",
     excerpts: [],
-  }), true, "ring-tide top1 的 title/path 身份应通过");
-  const demonCase = queryCases.find((item) => item.id === "reuse-demon-888");
-  assert(demonCase?.requiredDocumentIdentity?.[0]);
-  assert.equal(demonCase.requiredDocumentIdentity[0].test(documentIdentityText({
-    title: "statistic",
-    relativePath: "tables/statistic.xlsx",
-  })), false, "demon required identity 不得由 statistic 正文替代");
-  assert.equal(demonCase.requiredDocumentIdentity[0].test(documentIdentityText({
-    title: "万妖王·摩哥斯888活动_20260506",
-    relativePath: "2026/万妖王·摩哥斯888活动_20260506.docx",
+  }), true, "named-888 top1 的 title/path 身份应通过");
+  const namedReuseCase = queryCases.find((item) => item.id === "reuse-named-888");
+  assert(namedReuseCase?.requiredDocumentIdentity?.[0]);
+  assert.equal(namedReuseCase.requiredDocumentIdentity[0].test(documentIdentityText({
+    title: "statLog",
+    relativePath: "tables/statLog.xlsx",
+  })), false, "named required identity 不得由 statLog 正文替代");
+  assert.equal(namedReuseCase.requiredDocumentIdentity[0].test(documentIdentityText({
+    title: "万焰王·炽洛斯888活动_20260506",
+    relativePath: "2026/万焰王·炽洛斯888活动_20260506.docx",
   })), true);
   const result = (label) => ({
     label,
@@ -574,9 +601,9 @@ async function selfTest() {
   }
 
   const identityFailedNode = result("node");
-  identityFailedNode.results.find((item) => item.id === "reuse-demon-888").requiredDocumentIdentityRecallAt8 = false;
+  identityFailedNode.results.find((item) => item.id === "reuse-named-888").requiredDocumentIdentityRecallAt8 = false;
   const identityCases = buildQueryCaseGates(identityFailedNode.results, goResult.results);
-  assert.equal(identityCases.find((item) => item.id === "reuse-demon-888")?.passed, false);
+  assert.equal(identityCases.find((item) => item.id === "reuse-named-888")?.passed, false);
   assert.equal(buildComparisonGates({
     sourceInventoryComparison,
     effectiveDateDiffs: [],
@@ -660,6 +687,7 @@ async function main() {
     await selfTest();
     return;
   }
+  queryCases = await loadQueryCases(path.resolve(flag("cases") ?? path.join("tests", ".tmp", "real-corpus", "evidence-ab-cases.json")));
   const nodeRoot = requiredFlag("node-root");
   const goRoot = requiredFlag("go-root");
   const outputPath = path.resolve(flag("output") ?? path.join(goRoot, "node-go-evidence-ab.json"));

@@ -60,16 +60,24 @@ type failureAudit struct {
 	Missing    []string                `json:"missing"`
 }
 
-var knownCorpusFailures = map[string]string{
-	"plans:文案内容/剧情工作/支线/伯莱恩.docx":                                  "zip: not a valid zip file",
-	"plans:文案内容/剧情工作/主线/新建 microsoft word 文档.docx":                 "zip: not a valid zip file",
-	"plans:文案内容/剧情工作/主线/2024/ikar/斯摩亚蒂_百世之仇篇/百世之仇篇剧情整理.xlsx":       "文档未提取到可索引内容",
-	"plans:文案内容/剧情工作/主线/2024/ikar/威斯克_万古邪王篇/万古邪王篇剧情整理_截至0911.xlsx": "文档未提取到可索引内容",
-	"plans:文案内容/剧情工作/主线/2024/ikar/天蛇太祖_天蛇之乱篇/天蛇之乱篇剧情整理.xlsx":       "文档未提取到可索引内容",
-	"plans:文案内容/剧情工作/主线/2024/ikar/咤克斯_千年赫尔卡篇/千年赫尔卡篇.xlsx":          "文档未提取到可索引内容",
-	"plans:文案内容/test.txt":         "文档未提取到可索引内容",
-	"plans:太空站探索计划/铸魂塔/铸魂塔.xmind": "文档未提取到可索引内容",
-	"plans:关卡设定稿/test.txt":        "文档未提取到可索引内容",
+// knownCorpusFailures 是验收语料中已知无法抽取的文件（“来源:相对路径”到错误信息片段）。
+// 清单含真实文件名，不进仓库，运行时由 -known-failures 指向本地未跟踪的 JSON 读入。
+var knownCorpusFailures = map[string]string{}
+
+func loadKnownFailures(path string) (map[string]string, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("读取已知失败清单 %s：%w（清单含真实文件名，只放在本地未跟踪目录）", path, err)
+	}
+	entries := map[string]string{}
+	if err := json.Unmarshal(raw, &entries); err != nil {
+		return nil, fmt.Errorf("解析已知失败清单 %s：%w", path, err)
+	}
+	result := make(map[string]string, len(entries))
+	for key, message := range entries {
+		result[strings.ToLower(norm.NFC.String(key))] = message
+	}
+	return result, nil
 }
 
 func auditFailures(issues []core.IndexIssueRecord, roots map[string]string) failureAudit {
@@ -170,7 +178,13 @@ func main() {
 	expectedFormulaStrings := flag.Int64("expected-xls-string-formulas", 1437, "expected BIFF formulas containing string literals")
 	expectedXLookup := flag.Int64("expected-xlookup", 1704, "minimum indexed XLOOKUP occurrences")
 	expectedTextJoin := flag.Int64("expected-textjoin", 577, "minimum indexed TEXTJOIN occurrences")
+	knownFailuresPath := flag.String("known-failures", filepath.Join("tests", ".tmp", "real-corpus", "corpus-known-failures.json"), "local JSON map of known extraction failures (source:relative/path -> message)")
 	flag.Parse()
+	loadedFailures, err := loadKnownFailures(*knownFailuresPath)
+	if err != nil {
+		fatal(err)
+	}
+	knownCorpusFailures = loadedFailures
 	if strings.TrimSpace(*rootFlag) == "" {
 		*rootFlag = filepath.Join("tests", ".tmp", "go-plugin-corpus-"+time.Now().UTC().Format("20060102T150405Z"))
 	}
@@ -251,7 +265,7 @@ func main() {
 	}
 	report := map[string]any{
 		"schema": "drag_go_plugin_corpus_acceptance_v1", "createdAt": time.Now().UTC().Format(time.RFC3339Nano), "version": core.BackendVersion,
-		"inputs":          map[string]any{"acceptanceRoot": root, "configPath": store.ConfigPath, "databasePath": service.Database.Path(), "designRoot": design.RootPath, "tableRoot": table.RootPath, "concurrency": *concurrency},
+		"inputs":          map[string]any{"acceptanceRoot": root, "configPath": store.ConfigPath, "databasePath": service.Database.Path(), "designRoot": design.RootPath, "tableRoot": table.RootPath, "concurrency": *concurrency, "knownFailures": *knownFailuresPath},
 		"machine":         map[string]any{"go": runtime.Version(), "platform": runtime.GOOS, "arch": runtime.GOARCH},
 		"sourceInventory": before, "sourceInventoryAfter": after, "gates": gates,
 		"run": run, "runError": errorText(runErr), "externalWallMs": wallMS, "status": status, "statusError": errorText(statusErr), "integrity": integrity, "integrityError": errorText(integrityErr), "emptySourceIdentityCount": emptyIdentityCount, "emptySourceIdentityError": errorText(emptyIdentityErr),

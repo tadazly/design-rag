@@ -165,7 +165,7 @@ func TestResolveEffectiveDateRejectsVersionKeywordInOrdinaryRequirement(t *testi
 	document := ExtractedDocument{
 		Blocks: []Block{{
 			SectionType: "version_history",
-			Text:        "首次交付验收时间：2026.1.21，通过验收不晚于：2026.1.28，游戏内用于版本宣传或皮肤售卖。",
+			Text:        "初稿交付时间：2026.1.21，终稿验收不晚于：2026.1.28，用于版本宣传图和皮肤商品页。",
 		}},
 		EmbeddedModifiedAt: &embedded,
 	}

@@ -99,7 +99,7 @@ test("XLSX DateEvidence 精确读取修订表、版本轴与招募版本", async
   ]), "reuse");
 
   XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([
-    ["期数", "招募版本", "玩家可进入时间"],
+    ["期数", "招募版本", "玩家入场时间"],
     [6, 20241127, "预期20241204开始"],
   ]), "体验服招募记录");
   XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([
